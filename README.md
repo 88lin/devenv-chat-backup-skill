@@ -28,13 +28,36 @@ npx skills add https://github.com/88lin/devenv-chat-backup-skill.git --skill dev
 devenv-chat-backup/
 ├── SKILL.md                    # Skill 主文档（AI 读取）
 ├── scripts/
-│   └── chat-backup.sh          # 备份/恢复脚本（参数化模板）
+│   ├── chat-backup.sh          # 备份/恢复脚本（参数化模板）
+│   ├── github-accel.sh         # GitHub 加速方案（镜像回退）
+│   └── keepalive.sh            # tmux 防断开保活 + 心跳检测
 ├── references/
 │   ├── pitfalls.md             # 8 个踩坑经验 + 解决方案
 │   ├── architecture.md         # 方案架构和设计决策
 │   └── recovery-guide.md       # 容器重建后恢复步骤
 └── README.md                   # 本文件
 ```
+
+## GitHub 加速
+
+当直连 GitHub 慢或打不开时，自动切换到 `tvv.tw` 镜像：
+
+```bash
+# 加载加速脚本
+source scripts/github-accel.sh
+
+# 克隆（直连失败自动切换镜像）
+gclone https://github.com/user/repo.git
+
+# 拉取/推送
+gpull origin main
+gpush origin main
+
+# 下载 raw 文件
+graw https://raw.githubusercontent.com/user/repo/main/file.sh -o local.sh
+```
+
+支持所有 GitHub 链接类型：clone、raw、release、gist、API。
 
 ## 核心经验
 

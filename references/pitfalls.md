@@ -182,6 +182,39 @@ find /root -name ".git" -type d -exec rm -f {}/index.lock \; 2>/dev/null
 
 ---
 
+## 坑 9：GitHub 直连慢或打不开
+
+**现象**：`git clone` / `git pull` / `curl raw.githubusercontent.com` 经常超时或极慢
+
+**原因**：DevEnv 网络环境访问 GitHub 不稳定，`raw.githubusercontent.com` 被 DNS 限制，`github.com` 时好时坏
+
+**解决**：使用 `tvv.tw` 镜像加速，直连失败时自动回退
+
+```bash
+# 加载加速脚本
+source /root/github-accel.sh
+
+# ❌ 直连可能超时
+git clone https://github.com/user/repo.git
+curl -o file.sh https://raw.githubusercontent.com/user/repo/main/file.sh
+
+# ✅ 自动回退：先直连 15s，失败后切换镜像
+gclone https://github.com/user/repo.git
+graw https://raw.githubusercontent.com/user/repo/main/file.sh -o file.sh
+```
+
+**镜像原理**：在 GitHub URL 前加 `https://tvv.tw/` 即可加速：
+- `git clone https://tvv.tw/https://github.com/user/repo.git`
+- `https://tvv.tw/https://raw.githubusercontent.com/user/repo/main/file.sh`
+- `https://tvv.tw/https://github.com/.../releases/download/...`
+
+**注意**：
+- 镜像仅支持读操作（clone/fetch/pull），**不支持 push**
+- `gpush` 采用重试策略（3 次，每次 60s 超时）
+- 镜像克隆后自动修复 remote URL，确保后续 push 走直连
+
+---
+
 ## 经验总结
 
 1. **容器环境 ≠ 完整 Linux**：很多常用工具（rsync、crontab、curl 某些域名）可能不可用，要有替代方案

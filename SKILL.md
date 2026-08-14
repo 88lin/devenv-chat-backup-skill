@@ -117,6 +117,17 @@ chmod +x /root/chat-backup.sh
 | `keepalive.sh log` | 查看断开/恢复记录 |
 | `keepalive.sh attach` | 进入 tmux 会话 |
 
+### GitHub 加速（镜像回退）
+
+| 命令 | 说明 |
+|------|------|
+| `gclone <url> [dir]` | git clone 带镜像回退 |
+| `gpull [remote] [branch]` | git pull 带镜像回退 |
+| `gfetch [remote] [branch]` | git fetch 带镜像回退 |
+| `gpush [remote] [branch]` | git push 带重试（镜像不支持 push） |
+| `graw <url> [-o file]` | 下载 raw 文件带镜像回退 |
+| `ggit <subcmd> ...` | 通用 git 加速器（自动选择上述函数） |
+
 ## 备份内容
 
 | 文件 | 说明 |
@@ -145,6 +156,35 @@ dnf install -y tmux
 - **重连**：自动进入 tmux，显示断开时长提醒
 - **手动进入**：`tmux attach -t devenv`
 - **临时退出**：`Ctrl+B` 然后按 `D`（会话保持运行）
+
+## GitHub 加速（镜像回退）
+
+> 当直连 GitHub 慢或打不开时，自动切换到 `tvv.tw` 镜像
+
+```bash
+# 加载加速脚本（已配置在 .bashrc 中自动加载）
+source /root/github-accel.sh
+
+# 克隆仓库（直连失败自动切换镜像）
+gclone https://github.com/user/repo.git /path/to/clone
+
+# 拉取/推送（在仓库目录内）
+gpull origin main
+gpush origin main
+
+# 下载 raw 文件（直连失败自动切换镜像）
+graw https://raw.githubusercontent.com/user/repo/main/file.sh -o local.sh
+
+# 通用 git 加速器
+ggit clone https://github.com/user/repo.git
+ggit pull origin main
+ggit push origin main
+```
+
+**工作原理**：
+- `clone/fetch/pull`（读操作）：先直连 15s 超时，失败后自动用 `https://tvv.tw/` 镜像重试
+- `push`（写操作）：镜像不支持 push，自动重试 3 次（每次 60s 超时）
+- 镜像克隆后自动修复 remote URL，确保后续 push 走直连不走镜像
 
 ## 关键经验与避坑指南
 
