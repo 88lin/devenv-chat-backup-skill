@@ -61,7 +61,7 @@ graw https://raw.githubusercontent.com/user/repo/main/file.sh -o local.sh
 
 ## 核心经验
 
-本 skill 凝聚了在实际 DevEnv 环境中踩过的 **8 个关键坑**：
+本 skill 凝聚了在实际 DevEnv 环境中踩过的 **11 个关键坑**：
 
 | # | 问题 | 解决方案 |
 |---|------|----------|
@@ -75,6 +75,7 @@ graw https://raw.githubusercontent.com/user/repo/main/file.sh -o local.sh
 | 8 | 僵尸 git 进程堆积 | timeout 防止 + 清理 index.lock |
 | 9 | GitHub 直连慢/打不开 | `tvv.tw` 镜像自动回退 |
 | 10 | 每次重连要手动选 allow | `settings.json` 设 `permission: allow` |
+| 11 | SQLite WAL 库裸拷即损坏 | 用 `sqlite3 .backup` 快照，恢复前退出聊天并清 `-wal/-shm` |
 
 详见 [references/pitfalls.md](references/pitfalls.md)
 

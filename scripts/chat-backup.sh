@@ -63,6 +63,38 @@ with open('$settings', 'w') as f:
 
 # === 同步本地数据到仓库目录 ===
 # 注意：不能用 rsync，DevEnv 精简环境没有 rsync，用 cp -rf 替代
+# SQLite 是 WAL 模式时，主库文件 + memory.db-wal/memory.db-shm 才构成完整数据。
+# 裸 cp 主库会得到一份"撕裂"的不一致快照：一旦拿它恢复，直接产生
+# "database disk image is malformed" 损坏，聊天记录全部打不开。
+# 因此 SQLite 文件必须用 sqlite3 .backup 生成一致性快照，环境无 sqlite3 时
+# 退化为 cp 并记录警告（不可靠）。
+backup_one() {
+    local f="$1"
+    local src="$LOCAL_DIR/$f"
+    local dst="$REPO_DIR/hwcloud-data/$f"
+    [ -f "$src" ] || return 0
+
+    case "$f" in
+        *.db|*.sqlite)
+            if command -v sqlite3 >/dev/null 2>&1; then
+                if sqlite3 "$src" ".backup '$dst'" 2>>"$BACKUP_LOG"; then
+                    # 仓库目录的 -wal/-shm 属于旧拷贝残留，必须清掉避免误恢复
+                    rm -f "$dst-wal" "$dst-shm"
+                else
+                    log "BACKUP: $f 一致性快照失败（库损坏或被占用），跳过"
+                fi
+            else
+                cp -f "$src" "$dst" 2>/dev/null
+                rm -f "$dst-wal" "$dst-shm"
+                log "BACKUP: 警告: 环境无 sqlite3，$f 使用裸 cp 备份（不可靠，建议安装 sqlite3）"
+            fi
+            ;;
+        *)
+            cp -f "$src" "$dst" 2>/dev/null
+            ;;
+    esac
+}
+
 sync_to_repo() {
     [ ! -d "$LOCAL_DIR" ] && return 0
     mkdir -p "$REPO_DIR/hwcloud-data/sessions"
@@ -78,25 +110,52 @@ sync_to_repo() {
         done
     fi
 
-    # 同步其他重要文件
+    # 同步其他重要文件（SQLite 走一致性快照）
     for f in memory.db audit.db settings.json SOUL.md user_info.json; do
-        [ -f "$LOCAL_DIR/$f" ] && cp -f "$LOCAL_DIR/$f" "$REPO_DIR/hwcloud-data/$f"
+        backup_one "$f"
     done
 }
 
 # === 从仓库目录恢复到本地 ===
 # 注意：只覆盖不删除，避免删除本地新创建的会话
+# 警告：SQLite 是 WAL 模式时，运行中的聊天进程持有 -wal/-shm 帧，
+#       此时直接覆盖主库文件会造成主库与 WAL 帧错位 → 数据库损坏。
+#       因此：
+#       1) 覆盖前探测聊天进程；检测到在运行则本次恢复直接跳过（新终端时机兜底）
+#       2) 覆盖后清除本地残留的 -wal/-shm，让应用重启时干净重建
+#       3) 覆盖前先留一份现场快照到 restore-points/，出错可回滚
+# 聊天进程名不匹配时可用环境变量覆盖：HWCLOUD_PROC="another -arg"
+HWCLOUD_PROC="${HWCLOUD_PROC:-hwcloud}"
+
 sync_from_repo() {
     [ ! -d "$REPO_DIR/hwcloud-data" ] && return 0
-    mkdir -p "$LOCAL_DIR/sessions" "$LOCAL_DIR/logs"
+
+    # 探测聊天进程是否在运行（WAL 防损坏）
+    if pgrep -f "$HWCLOUD_PROC" >/dev/null 2>&1; then
+        log "RESTORE: 检测到 '$HWCLOUD_PROC' 正在运行，跳过数据库覆盖（避免 WAL 损坏）；请先退出聊天再手动恢复"
+        return 1
+    fi
+
+    mkdir -p "$LOCAL_DIR/sessions" "$LOCAL_DIR/logs" "$REPO_DIR/restore-points"
 
     if [ -d "$REPO_DIR/hwcloud-data/sessions" ]; then
         cp -rf "$REPO_DIR/hwcloud-data/sessions/"* "$LOCAL_DIR/sessions/" 2>/dev/null
     fi
 
+    # 覆盖前留现场快照，便于回滚
+    for f in memory.db audit.db; do
+        [ -f "$LOCAL_DIR/$f" ] && cp -f "$LOCAL_DIR/$f" "$REPO_DIR/restore-points/$(date '+%Y%m%d-%H%M%S')-$f.bak" 2>/dev/null
+    done
+
     for f in memory.db audit.db settings.json SOUL.md user_info.json; do
         [ -f "$REPO_DIR/hwcloud-data/$f" ] && cp -f "$REPO_DIR/hwcloud-data/$f" "$LOCAL_DIR/$f"
     done
+
+    # 关键：清掉本地旧 WAL/SHM，避免新旧帧错位导致的库损坏
+    rm -f "$LOCAL_DIR/memory.db-wal" "$LOCAL_DIR/memory.db-shm"
+    rm -f "$LOCAL_DIR/audit.db-wal"  "$LOCAL_DIR/audit.db-shm"
+
+    log "RESTORE: 数据库已覆盖，并已清除本地 -wal/-shm，请重启聊天应用"
 }
 
 # === 备份 ===
@@ -141,7 +200,10 @@ do_restore() {
         (cd "$REPO_DIR" && timeout $GIT_TIMEOUT git pull --rebase origin main 2>>"$BACKUP_LOG" >/dev/null)
     fi
 
-    sync_from_repo
+    if ! sync_from_repo; then
+        log "RESTORE: 已跳过（原因见上方日志）"
+        return 0
+    fi
 
     # 恢复后确保自动批准开启
     enable_auto_approve

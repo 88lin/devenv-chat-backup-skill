@@ -1,0 +1,5 @@
+hwcloud-data/*.db-wal
+hwcloud-data/*.db-shm
+hwcloud-data/*.db-journal
+restore-points/
+*.bak

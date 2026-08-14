@@ -215,6 +215,32 @@ graw https://raw.githubusercontent.com/user/repo/main/file.sh -o file.sh
 
 ---
 
+## 坑 10：SQLite WAL 库裸拷 = 备份无效 + 恢复即损坏
+
+**现象**：聊天记录数据库报 `database disk image is malformed (11)`，整库损坏打开即崩
+
+**原因**：`memory.db` 是 WAL 模式数据库，数据分布在主库文件 + `memory.db-wal`（+ `memory.db-shm`）三份文件里。旧版脚本用 `cp -f memory.db` 备份：
+1. 裸拷得到的是**撕裂的不一致快照**（主库和 WAL 帧处于任意中间状态），这份"备份"本身就不能用；更糟的是 `.bashrc` 在每次打开终端时自动 `restore`，把这份坏快照**覆盖回正在运行的库**，主库与 WAL 帧错位 → 整库损坏
+2. 运行中覆盖库文件 = 制造损坏的最快方式
+
+**解决**：
+1. 备份 SQLite 必须用一致性快照：
+```bash
+# ✅ 一致性快照（推荐）
+sqlite3 "$LOCAL_DIR/memory.db" ".backup '$REPO_DIR/hwcloud-data/memory.db'"
+
+# ❌ 禁止裸拷 WAL 库
+cp -f "$LOCAL_DIR/memory.db" "$REPO_DIR/hwcloud-data/memory.db"
+```
+2. 恢复前先确认聊天进程已退出，覆盖后清除本地 `-wal`/`-shm` 让其重建：
+```bash
+pgrep -f hwcloud && echo "先退出聊天再恢复！"
+rm -f "$LOCAL_DIR/memory.db-wal" "$LOCAL_DIR/memory.db-shm"
+```
+3. 覆盖前把现场 `memory.db` 留一份快照到 `restore-points/`，出错可回滚
+
+---
+
 ## 经验总结
 
 1. **容器环境 ≠ 完整 Linux**：很多常用工具（rsync、crontab、curl 某些域名）可能不可用，要有替代方案
