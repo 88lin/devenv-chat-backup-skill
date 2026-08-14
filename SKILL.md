@@ -98,6 +98,8 @@ chmod +x /root/chat-backup.sh
 
 ## 核心功能
 
+### 聊天备份
+
 | 命令 | 说明 |
 |------|------|
 | `chat-backup.sh setup` | 首次设置：备份 + 启动守护进程 + 配置 .bashrc |
@@ -105,6 +107,15 @@ chmod +x /root/chat-backup.sh
 | `chat-backup.sh restore` | 从 Git 恢复最新数据 |
 | `chat-backup.sh daemon` | 启动后台守护进程（每120秒备份） |
 | `chat-backup.sh status` | 查看备份状态 |
+
+### 防断开保活
+
+| 命令 | 说明 |
+|------|------|
+| `keepalive.sh setup` | 防断开保活设置（tmux + 心跳 + .bashrc） |
+| `keepalive.sh status` | 查看保活状态 |
+| `keepalive.sh log` | 查看断开/恢复记录 |
+| `keepalive.sh attach` | 进入 tmux 会话 |
 
 ## 备份内容
 
@@ -116,6 +127,24 @@ chmod +x /root/chat-backup.sh
 | `settings.json` | 用户设置 |
 | `SOUL.md` | Agent 人格配置 |
 | `user_info.json` | 用户信息 |
+
+## 防断开保活（tmux 方案）
+
+> 断连后正在运行的命令不会中断，重连自动恢复
+
+```bash
+# 安装 tmux（EulerOS）
+dnf install -y tmux
+
+# 一键设置防断开
+./scripts/keepalive.sh setup
+```
+
+设置后：
+- **断开**：tmux 会话保持运行，命令不中断
+- **重连**：自动进入 tmux，显示断开时长提醒
+- **手动进入**：`tmux attach -t devenv`
+- **临时退出**：`Ctrl+B` 然后按 `D`（会话保持运行）
 
 ## 关键经验与避坑指南
 
