@@ -133,7 +133,7 @@ fi
 # 容器重建后手动执行一次恢复命令（从 GitHub 仓库 README 复制）
 git config --global credential.helper store
 echo "https://YOUR_TOKEN@github.com" > ~/.git-credentials
-git clone https://YOUR_TOKEN@github.com/88lin/devenv-chat-backup.git /root/chat-backup-new
+git clone https://YOUR_TOKEN@github.com/YOUR_USER/YOUR_REPO.git /root/chat-backup-new
 cp /root/chat-backup-new/chat-backup.sh /root/chat-backup.sh
 chmod +x /root/chat-backup.sh
 /root/chat-backup.sh setup

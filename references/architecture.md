@@ -77,8 +77,8 @@ overlay 文件系统结构:
                     ▼
          ┌────────────────────┐
          │  GitHub 私有仓库     │
-         │  88lin/devenv-chat-  │
-         │  backup (private)    │
+         │  YOUR_USER/         │
+         │  YOUR_REPO (private)│
          └────────────────────┘
 ```
 

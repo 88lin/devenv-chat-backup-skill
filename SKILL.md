@@ -74,19 +74,27 @@ git config --global credential.helper store
 echo "https://YOUR_TOKEN@github.com" > ~/.git-credentials
 
 # 克隆仓库
-git clone https://YOUR_TOKEN@github.com/YOUR_USER/devenv-chat-backup.git /root/chat-backup-new
+git clone https://YOUR_TOKEN@github.com/YOUR_USER/YOUR_REPO.git /root/chat-backup-new
 
 # 复制备份脚本
-cp /root/chat-backup-new/chat-backup.sh /root/chat-backup.sh
+cp /root/chat-backup-new/scripts/chat-backup.sh /root/chat-backup.sh
 chmod +x /root/chat-backup.sh
+
+# 修改脚本顶部的 REPO_URL 为你自己的仓库地址
+# （编辑 /root/chat-backup.sh 第 19 行的 REPO_URL）
 
 # 一键设置（首次备份 + 启动守护进程 + 配置 .bashrc）
 /root/chat-backup.sh setup
 ```
 
+> ⚠️ **请将 `YOUR_TOKEN`、`YOUR_USER`、`YOUR_REPO` 替换为你自己的值！**
+> - `YOUR_TOKEN`：你的 GitHub Personal Access Token（需 repo 权限）
+> - `YOUR_USER`：你的 GitHub 用户名
+> - `YOUR_REPO`：你创建的私有仓库名
+
 ### 3. 容器重建后恢复
 
-容器重建后，打开 GitHub 仓库页面，复制 README 中的恢复命令执行即可。
+容器重建后，打开你自己的 GitHub 仓库页面，复制 README 中的恢复命令执行即可。
 
 ## 核心功能
 

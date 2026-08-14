@@ -9,7 +9,7 @@ DevEnv 容器被重建（手动重建、系统维护、自动扩缩容等），�
 
 ### 第一步：获取恢复命令
 
-打开 GitHub 仓库网页：https://github.com/88lin/devenv-chat-backup
+打开你自己的 GitHub 仓库网页（如 `https://github.com/YOUR_USER/YOUR_REPO`）
 
 查看 README.md 中的「容器重建后一键恢复」部分，复制恢复命令。
 
@@ -25,15 +25,20 @@ git config --global credential.helper store
 echo "https://YOUR_TOKEN@github.com" > ~/.git-credentials
 
 # 2. 克隆备份仓库
-git clone https://YOUR_TOKEN@github.com/88lin/devenv-chat-backup.git /root/chat-backup-new
+git clone https://YOUR_TOKEN@github.com/YOUR_USER/YOUR_REPO.git /root/chat-backup-new
 
 # 3. 复制备份脚本
-cp /root/chat-backup-new/chat-backup.sh /root/chat-backup.sh
+cp /root/chat-backup-new/scripts/chat-backup.sh /root/chat-backup.sh
 chmod +x /root/chat-backup.sh
 
-# 4. 一键设置（恢复数据 + 启动守护进程 + 配置 .bashrc）
+# 4. 修改脚本顶部配置为你自己的仓库
+sed -i 's|YOUR_USER/YOUR_REPO|YOUR_USER/YOUR_REPO|' /root/chat-backup.sh
+
+# 5. 一键设置（恢复数据 + 启动守护进程 + 配置 .bashrc）
 /root/chat-backup.sh setup
 ```
+
+> ⚠️ **请将 `YOUR_TOKEN`、`YOUR_USER`、`YOUR_REPO` 替换为你自己的值！**
 
 ### 第三步：验证
 

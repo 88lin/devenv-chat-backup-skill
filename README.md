@@ -11,7 +11,7 @@
 ### 方式一：作为 Skill 安装
 
 ```bash
-npx skills add https://github.com/88lin/devenv-chat-backup.git --skill devenv-chat-backup --branch skill -y
+npx skills add https://github.com/88lin/devenv-chat-backup-skill.git --skill devenv-chat-backup -y
 ```
 
 安装后，AI Agent 会自动在检测到聊天历史丢失问题时触发本 skill。
