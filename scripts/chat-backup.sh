@@ -31,6 +31,36 @@ export GIT_TERMINAL_PROMPT=0
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$BACKUP_LOG" 2>/dev/null; }
 
+# === 开启自动批准（免确认）===
+# 修改 settings.json 中的 permission 为 allow，避免每次工具调用都要手动确认
+enable_auto_approve() {
+    local settings="$LOCAL_DIR/settings.json"
+    if [ ! -f "$settings" ]; then
+        log "AUTO-APPROVE: settings.json 不存在，跳过"
+        return 0
+    fi
+
+    # 用 python3 安全修改 JSON
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c "
+import json, sys
+with open('$settings', 'r') as f:
+    d = json.load(f)
+d['permission'] = {'*': 'allow'}
+with open('$settings', 'w') as f:
+    json.dump(d, f, indent=2, ensure_ascii=False)
+" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            log "AUTO-APPROVE: 已开启"
+            return 0
+        fi
+    fi
+
+    # python3 不可用时用 sed 兜底
+    sed -i 's/"\*": "ask"/"\*": "allow"/' "$settings" 2>/dev/null
+    log "AUTO-APPROVE: sed 兜底修改"
+}
+
 # === 同步本地数据到仓库目录 ===
 # 注意：不能用 rsync，DevEnv 精简环境没有 rsync，用 cp -rf 替代
 sync_to_repo() {
@@ -113,6 +143,9 @@ do_restore() {
 
     sync_from_repo
 
+    # 恢复后确保自动批准开启
+    enable_auto_approve
+
     local n; n=$(find "$LOCAL_DIR/sessions" -name "*.jsonl" 2>/dev/null | wc -l)
     log "RESTORE: 完成, 会话数=$n"
 }
@@ -134,16 +167,20 @@ start_daemon() {
 
 # === 首次设置 ===
 do_setup() {
-    echo "1. 首次备份..."
+    echo "1. 开启自动批准（免确认）..."
+    enable_auto_approve
+    echo "   ✅"
+
+    echo "2. 首次备份..."
     do_backup
     echo "   ✅"
 
-    echo "2. 启动后台备份（每 ${BACKUP_INTERVAL} 秒）..."
+    echo "3. 启动后台备份（每 ${BACKUP_INTERVAL} 秒）..."
     start_daemon
     sleep 1
     echo "   ✅ PID: $(cat "$PID_FILE" 2>/dev/null)"
 
-    echo "3. 修改 .bashrc..."
+    echo "4. 修改 .bashrc..."
     local M="# >>> chat-backup auto-restore >>>"
     local ME="# <<< chat-backup auto-restore <<<"
     grep -q "$M" /root/.bashrc 2>/dev/null && sed -i "/${M}/,/${ME}/d" /root/.bashrc
@@ -193,10 +230,11 @@ do_status() {
 
 # === 主逻辑 ===
 case "${1:-}" in
-    backup)  do_backup ;;
-    restore) do_restore ;;
-    setup)   do_setup ;;
-    daemon)  start_daemon ;;
-    status)  do_status ;;
-    *) echo "用法: $0 {backup|restore|setup|daemon|status}"; exit 1 ;;
+    backup)       do_backup ;;
+    restore)      do_restore ;;
+    setup)        do_setup ;;
+    daemon)       start_daemon ;;
+    status)       do_status ;;
+    auto-approve) enable_auto_approve; echo "✅ 自动批准已开启" ;;
+    *) echo "用法: $0 {backup|restore|setup|daemon|status|auto-approve}"; exit 1 ;;
 esac

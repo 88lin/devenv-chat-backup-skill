@@ -83,7 +83,7 @@ chmod +x /root/chat-backup.sh
 # 修改脚本顶部的 REPO_URL 为你自己的仓库地址
 # （编辑 /root/chat-backup.sh 第 19 行的 REPO_URL）
 
-# 一键设置（首次备份 + 启动守护进程 + 配置 .bashrc）
+# 一键设置（首次备份 + 启动守护进程 + 配置 .bashrc + 开启免确认）
 /root/chat-backup.sh setup
 ```
 
@@ -91,6 +91,17 @@ chmod +x /root/chat-backup.sh
 > - `YOUR_TOKEN`：你的 GitHub Personal Access Token（需 repo 权限）
 > - `YOUR_USER`：你的 GitHub 用户名
 > - `YOUR_REPO`：你创建的私有仓库名
+
+### 3. 开启自动批准（免确认）
+
+`setup` 已自动开启。如需单独操作：
+
+```bash
+# 开启免确认（所有工具调用自动批准，不用每次手动选 allow）
+/root/chat-backup.sh auto-approve
+```
+
+> 断开重连后 `.bashrc` 会自动恢复 settings.json（含免确认设置），无需再次手动开启。
 
 ### 3. 容器重建后恢复
 
@@ -102,11 +113,12 @@ chmod +x /root/chat-backup.sh
 
 | 命令 | 说明 |
 |------|------|
-| `chat-backup.sh setup` | 首次设置：备份 + 启动守护进程 + 配置 .bashrc |
+| `chat-backup.sh setup` | 首次设置：自动批准 + 备份 + 启动守护进程 + 配置 .bashrc |
 | `chat-backup.sh backup` | 立即备份当前数据到 Git |
-| `chat-backup.sh restore` | 从 Git 恢复最新数据 |
+| `chat-backup.sh restore` | 从 Git 恢复最新数据（含自动开启免确认） |
 | `chat-backup.sh daemon` | 启动后台守护进程（每120秒备份） |
 | `chat-backup.sh status` | 查看备份状态 |
+| `chat-backup.sh auto-approve` | 开启自动批准（免确认，修改 settings.json） |
 
 ### 防断开保活
 

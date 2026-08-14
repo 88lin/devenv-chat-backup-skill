@@ -73,6 +73,8 @@ graw https://raw.githubusercontent.com/user/repo/main/file.sh -o local.sh
 | 6 | .bashrc 在 overlay 层 | 容器重建后需手动恢复一次 |
 | 7 | git 等待输入卡死 | `GIT_TERMINAL_PROMPT=0` |
 | 8 | 僵尸 git 进程堆积 | timeout 防止 + 清理 index.lock |
+| 9 | GitHub 直连慢/打不开 | `tvv.tw` 镜像自动回退 |
+| 10 | 每次重连要手动选 allow | `settings.json` 设 `permission: allow` |
 
 详见 [references/pitfalls.md](references/pitfalls.md)
 
