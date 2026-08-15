@@ -122,13 +122,15 @@ cp /root/chat-backup-new/chat-backup.sh /root/chat-backup.sh
 **解决**：这是 overlay FS 的设计特性，无法避免。方案是将恢复命令保存到 GitHub 仓库的 README 中，容器重建后手动执行一次即可
 
 ```bash
+# ⚠️ 以下为旧版配置，已废弃！restore 在 .bashrc 中会导致数据损坏（见坑 11）
 # .bashrc 中添加的自动恢复逻辑（容器重建后会丢失）
 # >>> chat-backup auto-restore >>>
 if [ -f /root/chat-backup.sh ]; then
-    /root/chat-backup.sh restore 2>/dev/null
+    /root/chat-backup.sh restore 2>/dev/null  # ← 危险！见坑 11
     /root/chat-backup.sh daemon 2>/dev/null
 fi
 # <<< chat-backup auto-restore <<<
+# ✅ 新版 .bashrc 只保留 daemon，不放 restore（见坑 11 的解决方案）
 
 # 容器重建后手动执行一次恢复命令（从 GitHub 仓库 README 复制）
 git config --global credential.helper store

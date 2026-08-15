@@ -32,7 +32,7 @@ devenv-chat-backup/
 │   ├── github-accel.sh         # GitHub 加速方案（镜像回退）
 │   └── keepalive.sh            # tmux 防断开保活 + 心跳检测
 ├── references/
-│   ├── pitfalls.md             # 8 个踩坑经验 + 解决方案
+│   ├── pitfalls.md             # 12 个踩坑经验 + 解决方案
 │   ├── architecture.md         # 方案架构和设计决策
 │   └── recovery-guide.md       # 容器重建后恢复步骤
 └── README.md                   # 本文件

@@ -31,8 +31,10 @@ git clone https://YOUR_TOKEN@github.com/YOUR_USER/YOUR_REPO.git /root/chat-backu
 cp /root/chat-backup-new/scripts/chat-backup.sh /root/chat-backup.sh
 chmod +x /root/chat-backup.sh
 
-# 4. 修改脚本顶部配置为你自己的仓库
-sed -i 's|YOUR_USER/YOUR_REPO|YOUR_USER/YOUR_REPO|' /root/chat-backup.sh
+# 4. 修改脚本顶部配置为你自己的仓库（手动编辑 REPO_URL 变量）
+#    vi /root/chat-backup.sh  →  找到 REPO_URL= 行，替换为你的仓库地址
+#    或用 sed（注意把下面的 YOUR_USER/YOUR_REPO 替换为实际值）:
+sed -i 's|YOUR_USER/YOUR_REPO|YOUR_USER/YOUR_REPO|' /root/chat-backup.sh  # ← 请替换为实际值！
 
 # 5. 一键设置（恢复数据 + 启动守护进程 + 配置 .bashrc）
 /root/chat-backup.sh setup
@@ -61,15 +63,23 @@ sed -i 's|YOUR_USER/YOUR_REPO|YOUR_USER/YOUR_REPO|' /root/chat-backup.sh
 
 执行 `setup` 后，系统自动完成：
 
-1. **数据恢复**：从 GitHub 仓库拉取最新数据，复制到本地聊天数据目录
-2. **守护进程启动**：后台进程每 120 秒自动备份一次
-3. **.bashrc 配置**：新终端连接时自动恢复 + 重启守护进程
+1. **守护进程启动**：后台进程每 120 秒自动备份一次
+2. **.bashrc 配置**：新终端连接时仅启动守护进程（不自动 restore）
+
+> ⚠️ **setup 不自动 restore 数据**。容器重建后请手动执行一次：
+> ```bash
+> /root/chat-backup.sh restore
+> ```
 
 ## 常见问题
 
 ### Q: 恢复后聊天历史没有立即出现？
 
-A: 需要重新连接终端（关闭当前终端再开一个新的），.bashrc 中的恢复逻辑会在新终端启动时执行。
+A: 手动执行恢复命令：
+```bash
+/root/chat-backup.sh restore
+```
+然后重新连接终端即可。
 
 ### Q: 守护进程没有启动？
 

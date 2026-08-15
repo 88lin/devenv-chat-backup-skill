@@ -40,7 +40,7 @@ description: |
 │                               ▼              │
 │  ┌──────────────┐    ┌──────────────────┐   │
 │  │  .bashrc      │───→│  守护进程          │   │
-│  │  (自动恢复)    │    │  每120s backup    │   │
+│  │  (自动备份)    │    │  每120s backup    │   │
 │  └──────────────┘    └────────┬─────────┘   │
 │                                │              │
 └────────────────────────────────┼─────────────┘
@@ -101,7 +101,7 @@ chmod +x /root/chat-backup.sh
 /root/chat-backup.sh auto-approve
 ```
 
-> 断开重连后 `.bashrc` 会自动恢复 settings.json（含免确认设置），无需再次手动开启。
+> `.bashrc` 只启动备份守护进程，不自动 restore。容器重建后需手动执行 `/root/chat-backup.sh restore` 恢复数据（含 settings.json）。
 
 ### 3. 容器重建后恢复
 

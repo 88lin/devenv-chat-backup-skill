@@ -79,10 +79,14 @@ gclone() {
     if [ $rc2 -eq 0 ]; then
         printf "✅ 镜像克隆成功\n"
         # 修复 remote URL：把镜像 URL 改回原始 GitHub URL（后续 push 不走镜像）
+        local target=""
         if [ ${#rest[@]} -gt 0 ]; then
-            local target="${rest[0]}"
-            [ -d "$target/.git" ] && git -C "$target" remote set-url origin "$url" 2>/dev/null
+            target="${rest[0]}"
+        else
+            # 无 target dir 时，git 自动从 URL 推导目录名
+            target=$(basename "$url" .git)
         fi
+        [ -d "$target/.git" ] && git -C "$target" remote set-url origin "$url" 2>/dev/null
     else
         printf "❌ 镜像也失败(rc=%s)\n" "$rc2"
     fi
