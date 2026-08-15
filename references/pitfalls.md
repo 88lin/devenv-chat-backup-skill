@@ -297,6 +297,43 @@ echo "💡 tmux 会话 'devenv' 正在运行，输入 tmux attach -t devenv 可�
 
 ---
 
+## 坑 13：cp -rf 不保留时间戳，备份文件全显示同一个日期
+
+**现象**：在 GitHub 仓库中查看备份的会话文件，所有文件的日期都是同一个（备份执行时间），无法分辨会话的实际创建/修改时间。
+
+**原因**：`cp -rf` 默认不保留源文件的修改时间（mtime），复制后文件的 mtime 变成当前时间。
+
+**解决**：加 `-p`（preserve）标志保留原始时间戳。
+
+```bash
+# ❌ 所有文件变成备份时间
+cp -rf "$LOCAL_DIR/sessions/"* "$REPO_DIR/hwcloud-data/sessions/"
+
+# ✅ 保留原始修改时间
+cp -rfp "$LOCAL_DIR/sessions/"* "$REPO_DIR/hwcloud-data/sessions/"
+```
+
+---
+
+## 坑 14：会话文件只有 ID 文件名，无法分辨哪个是哪个
+
+**现象**：备份仓库中会话文件名为 `01KZY1TGE2HW8Q2N51FHJT966W.jsonl`，全是数字和英文 ID。用户打开仓库后完全不知道哪个文件对应哪个对话。DevEnv UI 上显示的是中文标题（首条用户消息），但备份没有保留这个映射关系。
+
+**原因**：备份脚本只做了文件复制，没有生成任何可读的索引或映射。
+
+**解决**：新增 `generate_session_index()` 函数，扫描所有会话文件，提取首条用户消息（Role=0）作为标题，生成 `sessions-index.md`（人类可读）和 `sessions-index.json`（程序可读）。
+
+```bash
+# 生成的 sessions-index.md 示例：
+# | 序号 | 日期       | 消息数 | 标题                     | 会话ID      |
+# |------|------------|--------|--------------------------|------------|
+# | 1    | 2026-08-15 | 40     | 帮我看看登录模块...       | 01KZYF7R6...|
+```
+
+在 `sync_to_repo()` 中，sessions 同步完成后自动调用 `generate_session_index`。
+
+---
+
 ## 经验总结
 
 1. **容器环境 ≠ 完整 Linux**：很多常用工具（rsync、crontab、curl 某些域名）可能不可用，要有替代方案

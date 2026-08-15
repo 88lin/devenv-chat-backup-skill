@@ -32,11 +32,24 @@ devenv-chat-backup/
 │   ├── github-accel.sh         # GitHub 加速方案（镜像回退）
 │   └── keepalive.sh            # tmux 防断开保活 + 心跳检测
 ├── references/
-│   ├── pitfalls.md             # 12 个踩坑经验 + 解决方案
+│   ├── pitfalls.md             # 15 个踩坑经验 + 解决方案
 │   ├── architecture.md         # 方案架构和设计决策
 │   └── recovery-guide.md       # 容器重建后恢复步骤
 └── README.md                   # 本文件
 ```
+
+## 会话索引
+
+每次备份自动生成 `sessions-index.md`，将不可读的会话 ID 映射为可读的中文标题：
+
+```
+| 序号 | 日期       | 消息数 | 标题                           | 会话ID      |
+|------|------------|--------|--------------------------------|------------|
+| 1    | 2026-08-15 | 40     | 帮我看看这个项目的登录模块...   | 01KZYF7R6...|
+| 2    | 2026-08-15 | 105    | 帮我部署这个pr，我需要前端...   | 01KZY1TGE...|
+```
+
+在 GitHub 仓库中打开此文件即可一眼看出哪个会话是哪个。
 
 ## GitHub 加速
 
@@ -78,6 +91,8 @@ graw https://raw.githubusercontent.com/user/repo/main/file.sh -o local.sh
 | 11 | SQLite WAL 库裸拷即损坏 | 用 `sqlite3 .backup` 快照，恢复前退出聊天并清 `-wal/-shm` |
 | 12 | .bashrc 自动 restore 覆盖数据库 → AI 损坏 | .bashrc 只放 daemon，restore 改手动执行 |
 | 13 | exec tmux attach 替换 shell → DevEnv 连接断开 | 改为提示信息，不自动 exec |
+| 14 | `cp -rf` 不保留时间戳 → 备份文件全显示同一日期 | 改用 `cp -rfp` 保留原始 mtime |
+| 15 | 会话文件只有 ID 文件名，无法分辨哪个是哪个 | 自动生成 `sessions-index.md`，提取首条用户消息作为标题 |
 
 详见 [references/pitfalls.md](references/pitfalls.md)
 

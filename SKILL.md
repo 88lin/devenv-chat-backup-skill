@@ -147,12 +147,17 @@ chmod +x /root/chat-backup.sh
 
 | 文件 | 说明 |
 |------|------|
-| `sessions/*.jsonl` | 聊天会话记录 |
+| `sessions/*.jsonl` | 聊天会话记录（保留原始时间戳） |
+| `sessions-index.md` | 🆕 可读会话索引：ID → 中文标题 → 日期 → 消息数 |
+| `sessions-index.json` | 🆕 程序可读的会话索引（JSON 格式） |
 | `memory.db` | 语义记忆数据库 |
 | `audit.db` | 审计日志数据库 |
 | `settings.json` | 用户设置 |
 | `SOUL.md` | Agent 人格配置 |
 | `user_info.json` | 用户信息 |
+
+> 💡 **会话索引**：每次备份自动生成 `sessions-index.md`，提取每个会话的首条用户消息作为标题。
+> 在 GitHub 仓库中打开此文件即可一眼看出哪个会话是哪个，不用对着 ID 猜。
 
 ## 防断开保活（tmux 方案）
 
