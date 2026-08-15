@@ -63,12 +63,26 @@ generate_session_index() {
 
     local index_md="$REPO_DIR/hwcloud-data/sessions-index.md"
     local index_json="$REPO_DIR/hwcloud-data/sessions-index.json"
+    local db_path="$LOCAL_DIR/memory.db"
 
-    python3 - "$sessions_dir" "$index_md" "$index_json" << 'PYEOF' 2>/dev/null
-import json, os, glob, sys
+    python3 - "$sessions_dir" "$index_md" "$index_json" "$db_path" << 'PYEOF' 2>/dev/null
+import json, os, glob, sys, sqlite3
 from datetime import datetime
 
-sessions_dir, index_md, index_json = sys.argv[1], sys.argv[2], sys.argv[3]
+sessions_dir, index_md, index_json, db_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+
+# 从数据库读取会话创建时间（start_timestamp）
+db_times = {}
+try:
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=3)
+    cur = conn.cursor()
+    cur.execute("SELECT session_id, start_timestamp FROM sessions")
+    for sid, ts in cur.fetchall():
+        if ts:
+            db_times[sid] = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M')
+    conn.close()
+except:
+    pass
 
 files = sorted(glob.glob(os.path.join(sessions_dir, "*.jsonl")),
                key=lambda f: os.path.getmtime(f))
@@ -76,8 +90,12 @@ files = sorted(glob.glob(os.path.join(sessions_dir, "*.jsonl")),
 entries = []
 for f in files:
     sid = os.path.basename(f).replace('.jsonl', '')
-    mtime = os.path.getmtime(f)
-    mtime_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+    # 优先用数据库的会话创建时间，回退到文件 mtime
+    if sid in db_times:
+        time_str = db_times[sid]
+    else:
+        mtime = os.path.getmtime(f)
+        time_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
     size = os.path.getsize(f)
 
     title = "(空会话)"
@@ -103,10 +121,13 @@ for f in files:
     entries.append({
         "id": sid,
         "title": title,
-        "mtime": mtime_str,
+        "date": time_str,
         "messages": msg_count,
         "size": size
     })
+
+# 按时间排序
+entries.sort(key=lambda e: e["date"])
 
 # 生成 Markdown 索引
 with open(index_md, 'w', encoding='utf-8') as f:
@@ -115,7 +136,7 @@ with open(index_md, 'w', encoding='utf-8') as f:
     f.write("| 序号 | 日期 | 消息数 | 标题 | 会话ID |\n")
     f.write("|------|------|--------|------|--------|\n")
     for i, e in enumerate(entries, 1):
-        f.write(f"| {i} | {e['mtime']} | {e['messages']} | {e['title']} | `{e['id']}` |\n")
+        f.write(f"| {i} | {e['date']} | {e['messages']} | {e['title']} | `{e['id']}` |\n")
     f.write(f"\n> 在 GitHub 仓库中点击对应的 `.jsonl` 文件可查看完整对话内容。\n")
 
 # 生成 JSON 索引
