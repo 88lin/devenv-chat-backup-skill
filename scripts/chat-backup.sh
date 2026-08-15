@@ -105,13 +105,82 @@ backup_one() {
     esac
 }
 
+# === 生成可读的会话索引 ===
+# 扫描所有 session jsonl 文件，提取首条用户消息作为标题，
+# 生成 sessions-index.md（人类可读）和 sessions-index.json（程序可读）
+generate_session_index() {
+    local sessions_dir="$LOCAL_DIR/sessions"
+    [ -d "$sessions_dir" ] || return 0
+
+    local index_md="$REPO_DIR/hwcloud-data/sessions-index.md"
+    local index_json="$REPO_DIR/hwcloud-data/sessions-index.json"
+
+    python3 - "$sessions_dir" "$index_md" "$index_json" << 'PYINDEX' 2>/dev/null
+import json, os, glob, sys
+from datetime import datetime
+
+sessions_dir, index_md, index_json = sys.argv[1], sys.argv[2], sys.argv[3]
+
+files = sorted(glob.glob(os.path.join(sessions_dir, "*.jsonl")),
+               key=lambda f: os.path.getmtime(f))
+
+entries = []
+for f in files:
+    sid = os.path.basename(f).replace('.jsonl', '')
+    mtime = os.path.getmtime(f)
+    mtime_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+    size = os.path.getsize(f)
+
+    title = "(空会话)"
+    msg_count = 0
+    first_user_msg = ""
+
+    with open(f, 'r', encoding='utf-8', errors='replace') as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+                msg_count += 1
+                if d.get("Role") == 0 and d.get("Content") and not first_user_msg:
+                    first_user_msg = d["Content"][:80].replace('\n', ' ').strip()
+            except:
+                continue
+
+    if first_user_msg:
+        title = first_user_msg
+
+    entries.append({
+        "id": sid,
+        "title": title,
+        "mtime": mtime_str,
+        "messages": msg_count,
+        "size": size
+    })
+
+with open(index_md, 'w', encoding='utf-8') as f:
+    f.write(f"# 会话索引（共 {len(entries)} 个会话）\n\n")
+    f.write(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+    f.write("| 序号 | 日期 | 消息数 | 标题 | 会话ID |\n")
+    f.write("|------|------|--------|------|--------|\n")
+    for i, e in enumerate(entries, 1):
+        f.write(f"| {i} | {e['mtime']} | {e['messages']} | {e['title']} | `{e['id']}` |\n")
+    f.write(f"\n> 在 GitHub 仓库中点击对应的 `.jsonl` 文件可查看完整对话内容。\n")
+
+with open(index_json, 'w', encoding='utf-8') as f:
+    json.dump(entries, f, ensure_ascii=False, indent=2)
+PYINDEX
+    log "INDEX: 已生成会话索引"
+}
+
 sync_to_repo() {
     [ ! -d "$LOCAL_DIR" ] && return 0
     mkdir -p "$REPO_DIR/hwcloud-data/sessions"
 
     # 同步 sessions：复制本地文件到仓库
     if [ -d "$LOCAL_DIR/sessions" ]; then
-        cp -rf "$LOCAL_DIR/sessions/"* "$REPO_DIR/hwcloud-data/sessions/" 2>/dev/null
+        cp -rfp "$LOCAL_DIR/sessions/"* "$REPO_DIR/hwcloud-data/sessions/" 2>/dev/null
         # 删除仓库中已不在本地的文件（清理过期会话）
         for repo_file in "$REPO_DIR/hwcloud-data/sessions/"*; do
             [ -f "$repo_file" ] || continue
@@ -119,6 +188,9 @@ sync_to_repo() {
             [ -f "$LOCAL_DIR/sessions/$base" ] || rm -f "$repo_file"
         done
     fi
+
+    # 生成可读的会话索引
+    generate_session_index
 
     # 同步其他重要文件（SQLite 走一致性快照）
     for f in memory.db audit.db settings.json SOUL.md user_info.json; do
@@ -164,7 +236,7 @@ sync_from_repo() {
     mkdir -p "$LOCAL_DIR/sessions" "$LOCAL_DIR/logs" "$REPO_DIR/restore-points"
 
     if [ -d "$REPO_DIR/hwcloud-data/sessions" ]; then
-        cp -rf "$REPO_DIR/hwcloud-data/sessions/"* "$LOCAL_DIR/sessions/" 2>/dev/null
+        cp -rfp "$REPO_DIR/hwcloud-data/sessions/"* "$LOCAL_DIR/sessions/" 2>/dev/null
     fi
 
     # 覆盖前留现场快照，便于回滚
