@@ -334,6 +334,42 @@ cp -rfp "$LOCAL_DIR/sessions/"* "$REPO_DIR/hwcloud-data/sessions/"
 
 ---
 
+## 坑 16：messages 表为空 → DevEnv 界面只显示 session ID 而非中文标题
+
+### 现象
+
+容器重建后执行 `restore`，`sessions` 表已合并（`sessions.title` 有中文标题），
+但 DevEnv 界面仍然只显示 session ID（如 `01KZYF7R6...`），看不到任何中文。
+
+### 根因
+
+DevEnv 界面**不从 `sessions.title` 读取会话显示名**，而是从 `messages` 表中
+提取每个会话的**第一条用户消息**作为显示名。
+
+容器重建后 `messages` 表只有少量数据（新建的 2 个会话），其他 10 个会话的消息
+只存在于 `.jsonl` 文件中，没有被导入 `messages` 表。
+
+### 解决方案
+
+在 `chat-backup.sh` 中新增 `import_messages_from_jsonl()` 函数：
+
+1. 遍历 `sessions/*.jsonl` 文件
+2. 逐行解析 JSON，提取 `sessionId`、`role`、`content`、`timestamp` 等字段
+3. 用 `INSERT OR REPLACE` 写入 `messages` 表
+4. 跳过已存在的记录（避免重复导入）
+
+`restore` 函数在合并 `sessions` 表后自动调用 `import_messages_from_jsonl`，
+确保 `messages` 表包含所有历史消息。
+
+### 验证
+
+```bash
+sqlite3 /root/.ai/memory.db "SELECT COUNT(*) FROM messages;"
+# 应显示与 .jsonl 总消息数一致的数字（如 1279）
+```
+
+---
+
 ## 经验总结
 
 1. **容器环境 ≠ 完整 Linux**：很多常用工具（rsync、crontab、curl 某些域名）可能不可用，要有替代方案
@@ -341,3 +377,4 @@ cp -rfp "$LOCAL_DIR/sessions/"* "$REPO_DIR/hwcloud-data/sessions/"
 3. **overlay 层是临时的**：任何写入 overlay 层的配置（.bashrc 等）都可能在容器重建后丢失
 4. **守护进程要自防御**：CWD 丢失、TTY 缺失、进程堆积等问题都要预防
 5. **恢复命令要外部保存**：恢复命令本身也在 overlay 层，容器重建后一起丢失，必须保存到外部（如 GitHub 仓库 README）
+6. **界面显示名来源**：DevEnv 界面从 `messages` 表第一条用户消息提取显示名，不是 `sessions.title`。restore 必须同时恢复 `sessions` 和 `messages` 表

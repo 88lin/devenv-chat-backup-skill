@@ -1,53 +1,380 @@
+# 踩坑经验汇总
 
-## 坑 15：restore 时跳过数据库导致会话标题丢失（最严重）
+在实际 DevEnv 环境中部署聊天备份方案时踩过的所有坑，以及对应的解决方案。
 
-**现象**：容器重建后，DevEnv 界面里所有会话只显示 ID（如 `01KZY1TGE2HW8Q2N51FHJT966W`），
-看不到中文标题，无法辨认哪个会话是哪个。几千个会话根本没法选。
+---
 
-**根因**：会话标题存在 `memory.db` 的 `sessions` 表的 `title` 字段里，不在 `.jsonl` 文件里。
-DevEnv 界面从数据库读标题。但 restore 时检测到 AI 进程在运行就**直接跳过了数据库恢复**，
-只恢复了 `.jsonl` 文件。容器重建后数据库是空的，所以界面只能显示文件名（即会话 ID）。
+## 坑 1：rsync 不可用
 
-**解决方案**：不跳过，改为**安全合并**。用 SQLite 的 `ATTACH DATABASE` + `INSERT OR REPLACE`
-把备份的 `sessions` 和 `messages` 表合并到当前数据库。这是增量操作，不会覆盖活跃数据，
-AI 运行时也能安全执行。
+**现象**：脚本中使用 `rsync` 同步文件，报错 `rsync: command not found`
+
+**原因**：DevEnv 是精简容器环境，没有安装 rsync
+
+**解决**：用 `cp -rf` 替代 rsync
 
 ```bash
-# 核心合并逻辑
-ATTACH DATABASE '/tmp/backup.db' AS bk;
-INSERT OR REPLACE INTO sessions SELECT * FROM bk.sessions;        -- 含标题
-INSERT OR IGNORE INTO messages (...) SELECT ... FROM bk.messages;  -- 含消息
-DETACH DATABASE bk;
+# ❌ 不可用
+rsync -av --delete "$LOCAL_DIR/sessions/" "$REPO_DIR/sessions/"
+
+# ✅ 替代方案
+cp -rf "$LOCAL_DIR/sessions/"* "$REPO_DIR/sessions/"
+# 清理过期文件需要手动遍历删除
+for repo_file in "$REPO_DIR/sessions/"*; do
+    [ -f "$repo_file" ] || continue
+    base=$(basename "$repo_file")
+    [ -f "$LOCAL_DIR/sessions/$base" ] || rm -f "$repo_file"
+done
 ```
 
-**教训**：跳过（skip）是最简单的安全策略，但会导致数据丢失。合并（merge）才是正确的策略，
-既安全又不丢数据。
+---
 
-## 坑 4：sessions.title 有标题但界面仍显示 ID（messages 表为空）
+## 坑 2：git 命令无超时会卡死
 
-**现象**：容器重建后，`sessions` 表的 `title` 字段明明有中文标题（通过 `merge_session_db` 合并了），
-但 DevEnv 界面仍然显示会话 ID，不显示标题。
+**现象**：守护进程运行一段时间后停止工作，`ps` 显示 git 进程处于 `D` 状态（不可中断睡眠）
 
-**根因**：DevEnv 界面**不是从 `sessions.title` 读显示名**，而是从 `messages` 表的第一条 `role='user'` 
-消息的 `content_json` 中提取显示名。容器重建后 `messages` 表为空（备份时只有活跃会话的消息在 
-`messages` 表里），所以界面找不到显示名，回退为显示 session ID。
+**原因**：网络抖动时 `git push` / `git pull` 会无限等待，没有超时机制
 
-**调查过程**：
-1. 查 `sessions.title` → 10/12 有标题 ✅
-2. 查 `messages` 表 → 只有 2 个会话有消息 ❌
-3. 查备份数据库的 `messages` 表 → 也只有 2 个会话 → **备份时就不全**
-4. 查 `.jsonl` 文件 → 所有会话都有完整消息 ✅
+**解决**：所有 git 命令用 `timeout` 包裹
 
-**解决方案**：新增 `import_messages_from_jsonl()` 函数，在 restore 时从 `.jsonl` 文件补充 
-`messages` 表。对每个没有 messages 的会话，读取 `.jsonl` 文件，转换格式后插入 `messages` 表。
+```bash
+GIT_TIMEOUT=30
 
-```python
-# .jsonl 格式：{"TurnId":..., "Role":0, "Content":"用户消息", ...}
-# messages 表格式：content_json = {"ID":..., "Role":"user", "Parts":[{"Text":{"Text":"用户消息"}}], ...}
+# ❌ 危险：网络问题会无限卡死
+git pull origin main
+git push origin main
+
+# ✅ 安全：30秒超时
+timeout $GIT_TIMEOUT git pull origin main
+timeout $GIT_TIMEOUT git push origin main
 ```
 
-**关键教训**：
-- DevEnv 的数据存储是**双轨制**：`.jsonl` 文件（完整）+ `messages` 表（可能不全）
-- 界面读 `messages` 表，不读 `.jsonl` 文件
-- 只合并 `sessions` 表不够，必须同时确保 `messages` 表有数据
-- `.jsonl` 文件是消息的**权威来源**，`messages` 表是索引/缓存
+---
+
+## 坑 3：守护进程 CWD（工作目录）丢失
+
+**现象**：守护进程运行一段时间后报 `fatal: not a git repository`
+
+**原因**：守护进程的工作目录（CWD）可能被删除或重建，导致 git 命令找不到仓库
+
+**解决**：守护进程启动时先 `cd /root`，每次 backup 时也确保 cd 到仓库目录
+
+```bash
+# ❌ 依赖当前目录
+nohup bash -c "while true; do ./chat-backup.sh backup; sleep 120; done" &
+
+# ✅ 显式 cd 到稳定目录
+nohup setsid bash -c "cd /root; while true; do /root/chat-backup.sh backup; sleep 120; done" &
+```
+
+---
+
+## 坑 4：crontab 不可用
+
+**现象**：`crontab -e` 报错，无法设置定时任务
+
+**原因**：DevEnv 精简环境没有 cron 服务
+
+**解决**：用 `setsid + nohup + while 循环` 替代 crontab
+
+```bash
+# ❌ 不可用
+crontab -e
+# */2 * * * * /root/chat-backup.sh backup
+
+# ✅ 替代方案：后台守护进程
+nohup setsid bash -c "
+    cd /root
+    echo \$\$ > /var/run/chat-backup.pid
+    while true; do
+        /root/chat-backup.sh backup
+        sleep 120
+    done
+" >/dev/null 2>&1 &
+```
+
+---
+
+## 坑 5：curl 被 DNS 限制
+
+**现象**：`curl https://raw.githubusercontent.com/...` 超时，但 `git clone` 正常
+
+**原因**：DevEnv 网络环境对 `raw.githubusercontent.com` 域名有 DNS 限制
+
+**解决**：恢复命令必须用 `git clone`，不能用 curl 下载单文件
+
+```bash
+# ❌ 不可用：DNS 解析超时
+curl -o chat-backup.sh https://raw.githubusercontent.com/user/repo/main/chat-backup.sh
+
+# ✅ 可用：git clone 不受影响
+git clone https://TOKEN@github.com/user/repo.git /root/chat-backup-new
+cp /root/chat-backup-new/chat-backup.sh /root/chat-backup.sh
+```
+
+---
+
+## 坑 6：.bashrc 在 overlay 层，容器重建后丢失
+
+**现象**：容器重建后 `.bashrc` 中的自动恢复配置消失，需要重新配置
+
+**原因**：`.bashrc` 修改写入 overlay 层，容器重建时 overlay 层被清除
+
+**解决**：这是 overlay FS 的设计特性，无法避免。方案是将恢复命令保存到 GitHub 仓库的 README 中，容器重建后手动执行一次即可
+
+```bash
+# ⚠️ 以下为旧版配置，已废弃！restore 在 .bashrc 中会导致数据损坏（见坑 11）
+# .bashrc 中添加的自动恢复逻辑（容器重建后会丢失）
+# >>> chat-backup auto-restore >>>
+if [ -f /root/chat-backup.sh ]; then
+    /root/chat-backup.sh restore 2>/dev/null  # ← 危险！见坑 11
+    /root/chat-backup.sh daemon 2>/dev/null
+fi
+# <<< chat-backup auto-restore <<<
+# ✅ 新版 .bashrc 只保留 daemon，不放 restore（见坑 11 的解决方案）
+
+# 容器重建后手动执行一次恢复命令（从 GitHub 仓库 README 复制）
+git config --global credential.helper store
+echo "https://YOUR_TOKEN@github.com" > ~/.git-credentials
+git clone https://YOUR_TOKEN@github.com/YOUR_USER/YOUR_REPO.git /root/chat-backup-new
+cp /root/chat-backup-new/chat-backup.sh /root/chat-backup.sh
+chmod +x /root/chat-backup.sh
+/root/chat-backup.sh setup
+```
+
+---
+
+## 坑 7：git 等待输入导致守护进程卡死
+
+**现象**：守护进程静默停止，没有错误日志
+
+**原因**：git 在某些情况下会等待用户输入（如认证失败时提示输入密码），守护进程没有 TTY，会无限等待
+
+**解决**：设置 `GIT_TERMINAL_PROMPT=0`，git 遇到需要输入时直接报错退出而不是等待
+
+```bash
+# ✅ 在脚本开头设置
+export GIT_TERMINAL_PROMPT=0
+```
+
+---
+
+## 坑 8：僵尸 git 进程堆积 + index.lock 冲突
+
+**现象**：系统出现大量 `D` 状态的 git 进程，新备份报 `index.lock exists` 错误
+
+**原因**：
+1. 网络问题导致 git 进程卡在 `D` 状态（不可中断睡眠）
+2. 卡死的 git 进程持有 `index.lock`，新 git 命令无法执行
+3. 守护进程不断启动新 git 命令，进程越积越多
+
+**解决**：
+1. 用 `timeout` 防止 git 无限等待（见坑 2）
+2. 如果已经出现僵尸进程，手动清理：
+
+```bash
+# 杀掉所有 git 进程
+pkill -9 git 2>/dev/null
+
+# 清理 index.lock
+find /root -name ".git" -type d -exec rm -f {}/index.lock \; 2>/dev/null
+
+# 重启守护进程
+/root/chat-backup.sh daemon
+```
+
+---
+
+## 坑 9：GitHub 直连慢或打不开
+
+**现象**：`git clone` / `git pull` / `curl raw.githubusercontent.com` 经常超时或极慢
+
+**原因**：DevEnv 网络环境访问 GitHub 不稳定，`raw.githubusercontent.com` 被 DNS 限制，`github.com` 时好时坏
+
+**解决**：使用 `tvv.tw` 镜像加速，直连失败时自动回退
+
+```bash
+# 加载加速脚本
+source /root/github-accel.sh
+
+# ❌ 直连可能超时
+git clone https://github.com/user/repo.git
+curl -o file.sh https://raw.githubusercontent.com/user/repo/main/file.sh
+
+# ✅ 自动回退：先直连 15s，失败后切换镜像
+gclone https://github.com/user/repo.git
+graw https://raw.githubusercontent.com/user/repo/main/file.sh -o file.sh
+```
+
+**镜像原理**：在 GitHub URL 前加 `https://tvv.tw/` 即可加速：
+- `git clone https://tvv.tw/https://github.com/user/repo.git`
+- `https://tvv.tw/https://raw.githubusercontent.com/user/repo/main/file.sh`
+- `https://tvv.tw/https://github.com/.../releases/download/...`
+
+**注意**：
+- 镜像仅支持读操作（clone/fetch/pull），**不支持 push**
+- `gpush` 采用重试策略（3 次，每次 60s 超时）
+- 镜像克隆后自动修复 remote URL，确保后续 push 走直连
+
+---
+
+## 坑 10：SQLite WAL 库裸拷 = 备份无效 + 恢复即损坏
+
+**现象**：聊天记录数据库报 `database disk image is malformed (11)`，整库损坏打开即崩
+
+**原因**：`memory.db` 是 WAL 模式数据库，数据分布在主库文件 + `memory.db-wal`（+ `memory.db-shm`）三份文件里。旧版脚本用 `cp -f memory.db` 备份：
+1. 裸拷得到的是**撕裂的不一致快照**（主库和 WAL 帧处于任意中间状态），这份"备份"本身就不能用；更糟的是 `.bashrc` 在每次打开终端时自动 `restore`，把这份坏快照**覆盖回正在运行的库**，主库与 WAL 帧错位 → 整库损坏
+2. 运行中覆盖库文件 = 制造损坏的最快方式
+
+**解决**：
+1. 备份 SQLite 必须用一致性快照：
+```bash
+# ✅ 一致性快照（推荐）
+sqlite3 "$LOCAL_DIR/memory.db" ".backup '$REPO_DIR/hwcloud-data/memory.db'"
+
+# ❌ 禁止裸拷 WAL 库
+cp -f "$LOCAL_DIR/memory.db" "$REPO_DIR/hwcloud-data/memory.db"
+```
+2. 恢复前先确认聊天进程已退出，覆盖后清除本地 `-wal`/`-shm` 让其重建：
+```bash
+pgrep -f hwcloud && echo "先退出聊天再恢复！"
+rm -f "$LOCAL_DIR/memory.db-wal" "$LOCAL_DIR/memory.db-shm"
+```
+3. 覆盖前把现场 `memory.db` 留一份快照到 `restore-points/`，出错可回滚
+
+---
+
+## 坑 11：.bashrc 自动 restore 导致 AI 数据损坏/连接断开
+
+**现象**：按 setup 部署后，出现以下问题：
+- "用不了 AI" — AI 启动报数据库损坏
+- "数据没有" — 聊天历史全部消失
+- "连接直接断开" — 终端连上就断
+
+**原因**：`do_setup()` 在 `.bashrc` 中加入了 `restore` + `daemon`。每次开新终端都会触发 `restore`，而 `restore` 会覆盖 `memory.db`/`audit.db`/`settings.json` 并删除 WAL 文件。在以下时机，AI 进程（`hwcloud`）可能还没启动：
+- 容器刚启动时
+- AI 重启的间隙
+- `refresh.sh` 执行时（它 `source ~/.bashrc`）
+
+此时 `pgrep -f hwcloud` 检测不到进程 → restore 直接执行 → 用旧备份覆盖新数据 + 删 WAL → 数据库损坏或数据丢失。
+
+**解决**：
+1. **`.bashrc` 中只放 `daemon`，不放 `restore`**。restore 改为手动执行（容器重建后跑一次）
+2. **`sync_from_repo()` 增加 WAL 活跃度检测**：即使进程未检测到，如果 WAL 文件在 120 秒内被修改过，也跳过 restore
+3. **`enable_auto_approve()` 加原子锁**：用 `mkdir` 原子操作防止并发写坏 `settings.json`
+4. **`do_backup()` 加备份锁**：防止守护进程与手动 backup 并发导致 `index.lock` 冲突
+
+```bash
+# ❌ 危险：.bashrc 里放 restore
+if [ -f /root/chat-backup.sh ]; then
+    /root/chat-backup.sh restore 2>/dev/null   # ← 每次开终端都执行，时机不可控
+    /root/chat-backup.sh daemon 2>/dev/null
+fi
+
+# ✅ 安全：.bashrc 里只放 daemon
+if [ -f /root/chat-backup.sh ]; then
+    /root/chat-backup.sh daemon 2>/dev/null     # ← 只启动备份，不覆盖数据
+fi
+# restore 改为手动：容器重建后执行 /root/chat-backup.sh restore
+```
+
+---
+
+## 坑 12：keepalive.sh 的 exec tmux attach 导致 DevEnv 连接断开
+
+**现象**：部署 `keepalive.sh setup` 后，终端连上就断开，无法使用
+
+**原因**：`setup_bashrc()` 在 `.bashrc` 中加入 `exec tmux attach -t devenv`。`exec` 会用 tmux 进程替换当前 bash shell 进程。但 DevEnv 的终端管理（`devenvd`）通过 WebSocket 与 bash shell 通信，shell 进程被 `exec` 掉后，`devenvd` 认为终端已死 → 连接断开。
+
+**解决**：不自动 `exec tmux attach`，改为打印提示信息，用户按需手动 `tmux attach`。
+
+```bash
+# ❌ 危险：exec 替换 shell 进程，DevEnv 终端协议断裂
+exec tmux attach -t devenv
+
+# ✅ 安全：只提示，不替换 shell
+echo "💡 tmux 会话 'devenv' 正在运行，输入 tmux attach -t devenv 可进入"
+```
+
+---
+
+## 坑 13：cp -rf 不保留时间戳，备份文件全显示同一个日期
+
+**现象**：在 GitHub 仓库中查看备份的会话文件，所有文件的日期都是同一个（备份执行时间），无法分辨会话的实际创建/修改时间。
+
+**原因**：`cp -rf` 默认不保留源文件的修改时间（mtime），复制后文件的 mtime 变成当前时间。
+
+**解决**：加 `-p`（preserve）标志保留原始时间戳。
+
+```bash
+# ❌ 所有文件变成备份时间
+cp -rf "$LOCAL_DIR/sessions/"* "$REPO_DIR/hwcloud-data/sessions/"
+
+# ✅ 保留原始修改时间
+cp -rfp "$LOCAL_DIR/sessions/"* "$REPO_DIR/hwcloud-data/sessions/"
+```
+
+---
+
+## 坑 14：会话文件只有 ID 文件名，无法分辨哪个是哪个
+
+**现象**：备份仓库中会话文件名为 `01KZY1TGE2HW8Q2N51FHJT966W.jsonl`，全是数字和英文 ID。用户打开仓库后完全不知道哪个文件对应哪个对话。DevEnv UI 上显示的是中文标题（首条用户消息），但备份没有保留这个映射关系。
+
+**原因**：备份脚本只做了文件复制，没有生成任何可读的索引或映射。
+
+**解决**：新增 `generate_session_index()` 函数，扫描所有会话文件，提取首条用户消息（Role=0）作为标题，生成 `sessions-index.md`（人类可读）和 `sessions-index.json`（程序可读）。
+
+```bash
+# 生成的 sessions-index.md 示例：
+# | 序号 | 日期       | 消息数 | 标题                     | 会话ID      |
+# |------|------------|--------|--------------------------|------------|
+# | 1    | 2026-08-15 | 40     | 帮我看看登录模块...       | 01KZYF7R6...|
+```
+
+在 `sync_to_repo()` 中，sessions 同步完成后自动调用 `generate_session_index`。
+
+---
+
+## 坑 16：messages 表为空 → DevEnv 界面只显示 session ID 而非中文标题
+
+### 现象
+
+容器重建后执行 `restore`，`sessions` 表已合并（`sessions.title` 有中文标题），
+但 DevEnv 界面仍然只显示 session ID（如 `01KZYF7R6...`），看不到任何中文。
+
+### 根因
+
+DevEnv 界面**不从 `sessions.title` 读取会话显示名**，而是从 `messages` 表中
+提取每个会话的**第一条用户消息**作为显示名。
+
+容器重建后 `messages` 表只有少量数据（新建的 2 个会话），其他 10 个会话的消息
+只存在于 `.jsonl` 文件中，没有被导入 `messages` 表。
+
+### 解决方案
+
+在 `chat-backup.sh` 中新增 `import_messages_from_jsonl()` 函数：
+
+1. 遍历 `sessions/*.jsonl` 文件
+2. 逐行解析 JSON，提取 `sessionId`、`role`、`content`、`timestamp` 等字段
+3. 用 `INSERT OR REPLACE` 写入 `messages` 表
+4. 跳过已存在的记录（避免重复导入）
+
+`restore` 函数在合并 `sessions` 表后自动调用 `import_messages_from_jsonl`，
+确保 `messages` 表包含所有历史消息。
+
+### 验证
+
+```bash
+sqlite3 /root/.ai/memory.db "SELECT COUNT(*) FROM messages;"
+# 应显示与 .jsonl 总消息数一致的数字（如 1279）
+```
+
+---
+
+## 经验总结
+
+1. **容器环境 ≠ 完整 Linux**：很多常用工具（rsync、crontab、curl 某些域名）可能不可用，要有替代方案
+2. **网络不可靠**：所有网络操作必须加超时，否则守护进程会卡死
+3. **overlay 层是临时的**：任何写入 overlay 层的配置（.bashrc 等）都可能在容器重建后丢失
+4. **守护进程要自防御**：CWD 丢失、TTY 缺失、进程堆积等问题都要预防
+5. **恢复命令要外部保存**：恢复命令本身也在 overlay 层，容器重建后一起丢失，必须保存到外部（如 GitHub 仓库 README）
+6. **界面显示名来源**：DevEnv 界面从 `messages` 表第一条用户消息提取显示名，不是 `sessions.title`。restore 必须同时恢复 `sessions` 和 `messages` 表

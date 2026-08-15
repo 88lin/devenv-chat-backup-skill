@@ -118,7 +118,7 @@ chmod +x /root/chat-backup.sh
 |------|------|
 | `chat-backup.sh setup` | 首次设置：自动批准 + 备份 + 启动守护进程 + 配置 .bashrc（仅 daemon，不自动 restore） |
 | `chat-backup.sh backup` | 立即备份当前数据到 Git |
-| `chat-backup.sh restore` | 从 Git 恢复最新数据（AI 运行时安全合并数据库，AI 停止时直接恢复） |
+| `chat-backup.sh restore` | 从 Git 恢复最新数据（安全合并数据库 + 从 .jsonl 补充 messages 表） |
 | `chat-backup.sh daemon` | 启动后台守护进程（每120秒备份） |
 | `chat-backup.sh status` | 查看备份状态 |
 | `chat-backup.sh auto-approve` | 开启自动批准（免确认，修改 settings.json） |
@@ -150,7 +150,7 @@ chmod +x /root/chat-backup.sh
 | `sessions/*.jsonl` | 聊天会话记录（保留原始时间戳） |
 | `sessions-index.md` | 🆕 可读会话索引：ID → 中文标题 → 日期 → 消息数 |
 | `sessions-index.json` | 🆕 程序可读的会话索引（JSON 格式） |
-| `memory.db` | 语义记忆数据库 |
+| `memory.db` | 语义记忆数据库（sessions + messages 表） |
 | `audit.db` | 审计日志数据库 |
 | `settings.json` | 用户设置 |
 | `SOUL.md` | Agent 人格配置 |
@@ -158,6 +158,10 @@ chmod +x /root/chat-backup.sh
 
 > 💡 **会话索引**：每次备份自动生成 `sessions-index.md`，提取每个会话的首条用户消息作为标题。
 > 在 GitHub 仓库中打开此文件即可一眼看出哪个会话是哪个，不用对着 ID 猜。
+>
+> ⚠️ **messages 表是关键**：DevEnv 界面从 `messages` 表（不是 `sessions.title`）读取会话显示名。
+> restore 时会自动从 `.jsonl` 文件补充 `messages` 表（`import_messages_from_jsonl`），
+> 确保界面显示中文标题而非 session ID。
 
 ## 防断开保活（tmux 方案）
 
@@ -222,7 +226,8 @@ ggit push origin main
 8. **僵尸 git 进程堆积** → timeout 防止 + 手动清理 index.lock
 9. **.bashrc 自动 restore 损坏数据** → .bashrc 只放 daemon，restore 改手动（坑 11）
 10. **restore 跳过数据库导致标题丢失** → 改用 SQLite ATTACH 安全合并，不再跳过（坑 15）
-10. **exec tmux attach 断开连接** → 改为提示，不替换 shell 进程（坑 12）
+11. **sessions.title 有标题但界面仍显示 ID** → messages 表为空，从 .jsonl 补充（坑 16）
+12. **exec tmux attach 断开连接** → 改为提示，不替换 shell 进程（坑 12）
 
 ## References
 
