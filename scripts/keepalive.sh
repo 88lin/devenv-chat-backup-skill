@@ -129,11 +129,13 @@ fi
 # 更新心跳
 date "+%Y-%m-%d %H:%M:%S" > /tmp/devenv-heartbeat
 
-# 自动进入 tmux（仅交互式 shell + 未在 tmux 内 + tmux 已安装）
+# 提示进入 tmux（不自动 exec，避免替换 shell 进程导致 DevEnv 终端连接断裂）
+# 原方案用 exec tmux attach 替换当前 shell，但 DevEnv 的终端管理（devenvd）
+# 通过 WebSocket 与 bash shell 通信，shell 被 exec 掉后 DevEnv 认为终端已死 → 连接断开。
+# 改为仅提示，用户按需手动 tmux attach。
 if command -v tmux >/dev/null 2>&1 && [ -z "$TMUX" ] && [ -n "$PS1" ]; then
-    # 如果已有 devenv 会话，直接 attach
     if tmux has-session -t devenv 2>/dev/null; then
-        exec tmux attach -t devenv
+        echo "💡 tmux 会话 'devenv' 正在运行，输入 tmux attach -t devenv 可进入"
     fi
 fi
 # <<< devenv-keepalive <<<

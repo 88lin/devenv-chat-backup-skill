@@ -61,7 +61,7 @@ graw https://raw.githubusercontent.com/user/repo/main/file.sh -o local.sh
 
 ## 核心经验
 
-本 skill 凝聚了在实际 DevEnv 环境中踩过的 **11 个关键坑**：
+本 skill 凝聚了在实际 DevEnv 环境中踩过的 **13 个关键坑**：
 
 | # | 问题 | 解决方案 |
 |---|------|----------|
@@ -76,6 +76,8 @@ graw https://raw.githubusercontent.com/user/repo/main/file.sh -o local.sh
 | 9 | GitHub 直连慢/打不开 | `tvv.tw` 镜像自动回退 |
 | 10 | 每次重连要手动选 allow | `settings.json` 设 `permission: allow` |
 | 11 | SQLite WAL 库裸拷即损坏 | 用 `sqlite3 .backup` 快照，恢复前退出聊天并清 `-wal/-shm` |
+| 12 | .bashrc 自动 restore 覆盖数据库 → AI 损坏 | .bashrc 只放 daemon，restore 改手动执行 |
+| 13 | exec tmux attach 替换 shell → DevEnv 连接断开 | 改为提示信息，不自动 exec |
 
 详见 [references/pitfalls.md](references/pitfalls.md)
 

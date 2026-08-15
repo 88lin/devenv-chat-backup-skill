@@ -241,6 +241,60 @@ rm -f "$LOCAL_DIR/memory.db-wal" "$LOCAL_DIR/memory.db-shm"
 
 ---
 
+## 坑 11：.bashrc 自动 restore 导致 AI 数据损坏/连接断开
+
+**现象**：按 setup 部署后，出现以下问题：
+- "用不了 AI" — AI 启动报数据库损坏
+- "数据没有" — 聊天历史全部消失
+- "连接直接断开" — 终端连上就断
+
+**原因**：`do_setup()` 在 `.bashrc` 中加入了 `restore` + `daemon`。每次开新终端都会触发 `restore`，而 `restore` 会覆盖 `memory.db`/`audit.db`/`settings.json` 并删除 WAL 文件。在以下时机，AI 进程（`hwcloud`）可能还没启动：
+- 容器刚启动时
+- AI 重启的间隙
+- `refresh.sh` 执行时（它 `source ~/.bashrc`）
+
+此时 `pgrep -f hwcloud` 检测不到进程 → restore 直接执行 → 用旧备份覆盖新数据 + 删 WAL → 数据库损坏或数据丢失。
+
+**解决**：
+1. **`.bashrc` 中只放 `daemon`，不放 `restore`**。restore 改为手动执行（容器重建后跑一次）
+2. **`sync_from_repo()` 增加 WAL 活跃度检测**：即使进程未检测到，如果 WAL 文件在 120 秒内被修改过，也跳过 restore
+3. **`enable_auto_approve()` 加原子锁**：用 `mkdir` 原子操作防止并发写坏 `settings.json`
+4. **`do_backup()` 加备份锁**：防止守护进程与手动 backup 并发导致 `index.lock` 冲突
+
+```bash
+# ❌ 危险：.bashrc 里放 restore
+if [ -f /root/chat-backup.sh ]; then
+    /root/chat-backup.sh restore 2>/dev/null   # ← 每次开终端都执行，时机不可控
+    /root/chat-backup.sh daemon 2>/dev/null
+fi
+
+# ✅ 安全：.bashrc 里只放 daemon
+if [ -f /root/chat-backup.sh ]; then
+    /root/chat-backup.sh daemon 2>/dev/null     # ← 只启动备份，不覆盖数据
+fi
+# restore 改为手动：容器重建后执行 /root/chat-backup.sh restore
+```
+
+---
+
+## 坑 12：keepalive.sh 的 exec tmux attach 导致 DevEnv 连接断开
+
+**现象**：部署 `keepalive.sh setup` 后，终端连上就断开，无法使用
+
+**原因**：`setup_bashrc()` 在 `.bashrc` 中加入 `exec tmux attach -t devenv`。`exec` 会用 tmux 进程替换当前 bash shell 进程。但 DevEnv 的终端管理（`devenvd`）通过 WebSocket 与 bash shell 通信，shell 进程被 `exec` 掉后，`devenvd` 认为终端已死 → 连接断开。
+
+**解决**：不自动 `exec tmux attach`，改为打印提示信息，用户按需手动 `tmux attach`。
+
+```bash
+# ❌ 危险：exec 替换 shell 进程，DevEnv 终端协议断裂
+exec tmux attach -t devenv
+
+# ✅ 安全：只提示，不替换 shell
+echo "💡 tmux 会话 'devenv' 正在运行，输入 tmux attach -t devenv 可进入"
+```
+
+---
+
 ## 经验总结
 
 1. **容器环境 ≠ 完整 Linux**：很多常用工具（rsync、crontab、curl 某些域名）可能不可用，要有替代方案
