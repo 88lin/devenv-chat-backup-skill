@@ -184,6 +184,92 @@ merge_session_db() {
     return $rc
 }
 
+# === 从 .jsonl 文件补充 messages 表 ===
+# DevEnv 界面从 messages 表读取会话显示名（第一条用户消息）
+# 容器重建后 messages 表可能为空，需要从 .jsonl 文件补充
+import_messages_from_jsonl() {
+    [ -d "$LOCAL_DIR/sessions" ] || return 0
+    [ -f "$LOCAL_DIR/memory.db" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+
+    python3 - "$LOCAL_DIR" <<'PYEOF' 2>/dev/null
+import json, os, sqlite3, time, uuid, sys
+
+local_dir = sys.argv[1]
+sessions_dir = os.path.join(local_dir, "sessions")
+db_path = os.path.join(local_dir, "memory.db")
+
+ROLE_MAP = {0: "user", 1: "assistant", 2: "tool", 3: "assistant"}
+
+def gen_uid():
+    return "01" + uuid.uuid4().hex.upper()[:24]
+
+conn = sqlite3.connect(db_path)
+conn.execute("PRAGMA journal_mode=WAL")
+cur = conn.cursor()
+
+cur.execute("SELECT session_id, start_timestamp FROM sessions")
+sessions = cur.fetchall()
+
+imported = 0
+for session_id, start_ts in sessions:
+    cur.execute("SELECT COUNT(*) FROM messages WHERE session_id=?", (session_id,))
+    if cur.fetchone()[0] > 0:
+        continue
+
+    jsonl_path = os.path.join(sessions_dir, f"{session_id}.jsonl")
+    if not os.path.exists(jsonl_path):
+        continue
+
+    rows = []
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except:
+                continue
+            role_num = data.get("Role", -1)
+            role_str = ROLE_MAP.get(role_num, "assistant")
+            content = data.get("Content", "")
+            if not content:
+                continue
+            ts = start_ts + i * 0.001
+            msg_uid = gen_uid()
+            content_json = json.dumps({
+                "ID": msg_uid, "SessionID": session_id, "Role": role_str,
+                "Parts": [{"Type": "text", "Text": {"Text": content},
+                           "File": None, "Image": None, "Audio": None,
+                           "ToolCall": None, "Reasoning": None}],
+                "Metadata": {"acp_message_id": None, "acp_meta": {}, "source": "local"},
+                "CreatedAt": time.strftime("%Y-%m-%dT%H:%M:%S+08:00", time.localtime(ts)),
+                "TokenCount": 0
+            }, ensure_ascii=False)
+            rows.append((msg_uid, session_id, role_str, content_json,
+                        content[:200], "", "", "", "", "", ts, 0))
+
+    if rows:
+        cur.executemany(
+            "INSERT OR IGNORE INTO messages (message_uid, session_id, role, "
+            "content_json, search_text, tool_name, tool_call_id, tool_calls, "
+            "finish_reason, reasoning, timestamp, token_count) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        cur.execute("UPDATE sessions SET message_count=? WHERE session_id=?",
+                    (len(rows), session_id))
+        imported += 1
+
+conn.commit()
+conn.close()
+if imported > 0:
+    print(f"JSONL_IMPORT: 补充了 {imported} 个会话的 messages")
+PYEOF
+    local rc=$?
+    [ $rc -eq 0 ] && log "JSONL_IMPORT: 从 .jsonl 补充 messages 表完成" || true
+    return 0
+}
+
 # === 从仓库目录恢复到本地 ===
 sync_from_repo() {
     [ ! -d "$REPO_DIR/hwcloud-data" ] && return 0
@@ -228,6 +314,9 @@ sync_from_repo() {
     for f in settings.json SOUL.md user_info.json; do
         [ -f "$REPO_DIR/hwcloud-data/$f" ] && cp -fp "$REPO_DIR/hwcloud-data/$f" "$LOCAL_DIR/$f"
     done
+
+    # 从 .jsonl 补充 messages 表（DevEnv 界面靠 messages 表显示会话标题）
+    import_messages_from_jsonl
 }
 
 # === 备份 ===
