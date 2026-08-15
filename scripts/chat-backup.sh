@@ -417,6 +417,40 @@ start_daemon() {
     log "DAEMON: 已启动"
 }
 
+# === 自动批准（免确认）===
+# 修改 settings.json 把 permission 设为 allow，每次重连自动执行
+auto_approve() {
+    local settings="$LOCAL_DIR/settings.json"
+    [ -f "$settings" ] || return 0
+
+    python3 - "$settings" << 'PYEOF' 2>/dev/null
+import json, sys
+
+path = sys.argv[1]
+with open(path, 'r', encoding='utf-8') as f:
+    data = json.load(f)
+
+changed = False
+perm = data.get("permission", {})
+if perm.get("*") != "allow":
+    perm["*"] = "allow"
+    data["permission"] = perm
+    changed = True
+
+if changed:
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+    print("CHANGED")
+else:
+    print("ALREADY_ALLOW")
+PYEOF
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        log "AUTO_APPROVE: permission 已设为 allow"
+    fi
+    return 0
+}
+
 # === 设置 ===
 do_setup() {
     echo "1. 首次备份..."
@@ -440,6 +474,7 @@ do_setup() {
 # 容器重建后请手动执行一次：/root/chat-backup.sh restore
 if [ -f /root/chat-backup.sh ]; then
     /root/chat-backup.sh daemon 2>/dev/null
+    /root/chat-backup.sh auto-approve 2>/dev/null
 fi
 # <<< chat-backup auto-restore <<<
 EOF
@@ -483,8 +518,9 @@ do_status() {
 case "${1:-}" in
     backup)  do_backup ;;
     restore) do_restore ;;
-    setup)   do_setup ;;
-    daemon)  start_daemon ;;
-    status)  do_status ;;
-    *) echo "用法: $0 {backup|restore|setup|daemon|status}"; exit 1 ;;
+    setup)        do_setup ;;
+    daemon)       start_daemon ;;
+    status)       do_status ;;
+    auto-approve) auto_approve ;;
+    *) echo "用法: $0 {backup|restore|setup|daemon|status|auto-approve}"; exit 1 ;;
 esac
