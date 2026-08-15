@@ -369,7 +369,7 @@ else:
     turn_min = min(turn_ids.values())
     turn_max = max(turn_ids.values())
 
-# 5. 线性插值并更新
+# 5. 线性插值并更新（start_timestamp + created_at + updated_at 三列都改）
 updated = 0
 for sid, old_ts, turn_id in need_fix:
     if turn_max == turn_min:
@@ -377,7 +377,8 @@ for sid, old_ts, turn_id in need_fix:
     else:
         ratio = (turn_id - turn_min) / (turn_max - turn_min)
         new_ts = t_min + ratio * (t_max - t_min)
-    cur.execute("UPDATE sessions SET start_timestamp=? WHERE session_id=?", (new_ts, sid))
+    cur.execute("UPDATE sessions SET start_timestamp=?, created_at=?, updated_at=? WHERE session_id=?",
+                (new_ts, new_ts, new_ts, sid))
     updated += 1
 
 conn.commit()
