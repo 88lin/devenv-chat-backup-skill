@@ -40,6 +40,13 @@ enable_auto_approve() {
         return 0
     fi
 
+    # 原子锁：防止守护进程与新终端并发写坏 settings.json
+    local lockdir="${settings}.lockdir"
+    if ! mkdir "$lockdir" 2>/dev/null; then
+        log "AUTO-APPROVE: settings.json 被占用，跳过"
+        return 0
+    fi
+
     # 用 python3 安全修改 JSON
     if command -v python3 >/dev/null 2>&1; then
         python3 -c "
@@ -52,6 +59,7 @@ with open('$settings', 'w') as f:
 " 2>/dev/null
         if [ $? -eq 0 ]; then
             log "AUTO-APPROVE: 已开启"
+            rmdir "$lockdir" 2>/dev/null
             return 0
         fi
     fi
@@ -59,6 +67,8 @@ with open('$settings', 'w') as f:
     # python3 不可用时用 sed 兜底
     sed -i 's/"\*": "ask"/"\*": "allow"/' "$settings" 2>/dev/null
     log "AUTO-APPROVE: sed 兜底修改"
+
+    rmdir "$lockdir" 2>/dev/null
 }
 
 # === 同步本地数据到仓库目录 ===
@@ -136,6 +146,21 @@ sync_from_repo() {
         return 1
     fi
 
+    # WAL 活跃度检测：即使进程未检测到，如果 WAL 文件在最近 120 秒内被修改过，
+    # 说明数据库仍在活跃使用（可能是进程刚重启的间隙），跳过 restore 避免覆盖+删 WAL 导致损坏
+    local _now_ts; _now_ts=$(date +%s)
+    for _wal in "$LOCAL_DIR/memory.db-wal" "$LOCAL_DIR/audit.db-wal"; do
+        if [ -f "$_wal" ]; then
+            local _wal_mtime _wal_age
+            _wal_mtime=$(stat -c %Y "$_wal" 2>/dev/null || echo 0)
+            _wal_age=$((_now_ts - _wal_mtime))
+            if [ "$_wal_age" -lt 120 ]; then
+                log "RESTORE: WAL 文件 $_wal 在 ${_wal_age}s 前被修改，数据库活跃使用中，跳过 restore"
+                return 1
+            fi
+        fi
+    done
+
     mkdir -p "$LOCAL_DIR/sessions" "$LOCAL_DIR/logs" "$REPO_DIR/restore-points"
 
     if [ -d "$REPO_DIR/hwcloud-data/sessions" ]; then
@@ -160,6 +185,13 @@ sync_from_repo() {
 
 # === 备份 ===
 do_backup() {
+    # 备份锁：防止守护进程与手动 backup 并发执行导致 git index.lock 冲突
+    local _bk_lock="/var/run/chat-backup-bk.lock"
+    if ! mkdir "$_bk_lock" 2>/dev/null; then
+        log "BACKUP: 另一个备份正在进行，跳过"
+        return 0
+    fi
+
     log "BACKUP: 开始"
 
     # 确保仓库存在
@@ -188,6 +220,7 @@ do_backup() {
 
     local n; n=$(find "$LOCAL_DIR/sessions" -name "*.jsonl" 2>/dev/null | wc -l)
     log "BACKUP: 完成, 会话数=$n"
+    rmdir "$_bk_lock" 2>/dev/null
 }
 
 # === 恢复 ===
@@ -249,8 +282,10 @@ do_setup() {
     cat >> /root/.bashrc << 'EOF'
 
 # >>> chat-backup auto-restore >>>
+# 安全策略：.bashrc 只启动备份守护进程，不自动 restore。
+# restore 会覆盖数据库文件，在 AI 进程启动间隙执行会导致数据损坏。
+# 容器重建后请手动执行一次：/root/chat-backup.sh restore
 if [ -f /root/chat-backup.sh ]; then
-    /root/chat-backup.sh restore 2>/dev/null
     /root/chat-backup.sh daemon 2>/dev/null
 fi
 # <<< chat-backup auto-restore <<<
@@ -260,7 +295,8 @@ EOF
     echo ""
     echo "✅ 设置完成！"
     echo "   - 每 ${BACKUP_INTERVAL} 秒自动备份到 GitHub 私有仓库"
-    echo "   - 新终端自动恢复 + 重启备份守护进程"
+    echo "   - 新终端自动重启备份守护进程（不自动 restore，避免数据损坏）"
+    echo "   - 容器重建后请手动执行: /root/chat-backup.sh restore"
     echo "   - 备份日志: $BACKUP_LOG"
 }
 
