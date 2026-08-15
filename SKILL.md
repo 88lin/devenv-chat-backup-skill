@@ -108,7 +108,7 @@ chmod +x /root/chat-backup.sh
 容器重建后，打开你自己的 GitHub 仓库页面，复制 README 中的恢复命令执行即可。
 
 > ⚠️ **重要**：`setup` 不会自动 `restore`。容器重建后请**手动执行一次** `/root/chat-backup.sh restore` 恢复历史数据。
-> `.bashrc` 中只配置了 `daemon`（自动备份），不配置 `restore`（避免在 AI 进程启动间隙覆盖数据库导致损坏）。
+> restore 现在使用**安全合并**模式：AI 运行时用 SQLite ATTACH + INSERT OR REPLACE 合并数据库，不会覆盖活跃数据。
 
 ## 核心功能
 
@@ -118,7 +118,7 @@ chmod +x /root/chat-backup.sh
 |------|------|
 | `chat-backup.sh setup` | 首次设置：自动批准 + 备份 + 启动守护进程 + 配置 .bashrc（仅 daemon，不自动 restore） |
 | `chat-backup.sh backup` | 立即备份当前数据到 Git |
-| `chat-backup.sh restore` | 从 Git 恢复最新数据（含自动开启免确认） |
+| `chat-backup.sh restore` | 从 Git 恢复最新数据（AI 运行时安全合并数据库，AI 停止时直接恢复） |
 | `chat-backup.sh daemon` | 启动后台守护进程（每120秒备份） |
 | `chat-backup.sh status` | 查看备份状态 |
 | `chat-backup.sh auto-approve` | 开启自动批准（免确认，修改 settings.json） |
@@ -221,6 +221,7 @@ ggit push origin main
 7. **GIT_TERMINAL_PROMPT=0** → 防止 git 等待输入导致守护进程卡死
 8. **僵尸 git 进程堆积** → timeout 防止 + 手动清理 index.lock
 9. **.bashrc 自动 restore 损坏数据** → .bashrc 只放 daemon，restore 改手动（坑 11）
+10. **restore 跳过数据库导致标题丢失** → 改用 SQLite ATTACH 安全合并，不再跳过（坑 15）
 10. **exec tmux attach 断开连接** → 改为提示，不替换 shell 进程（坑 12）
 
 ## References

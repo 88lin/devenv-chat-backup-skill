@@ -70,6 +70,10 @@ sed -i 's|YOUR_USER/YOUR_REPO|YOUR_USER/YOUR_REPO|' /root/chat-backup.sh  # ← 
 > ```bash
 > /root/chat-backup.sh restore
 > ```
+> 
+> restore 会自动检测 AI 进程状态：
+> - **AI 运行中** → 用 SQLite ATTACH + INSERT OR REPLACE **安全合并**数据库（恢复会话标题和消息，不覆盖活跃数据）
+> - **AI 未运行** → 直接恢复整个数据库文件
 
 ## 常见问题
 
@@ -79,7 +83,12 @@ A: 手动执行恢复命令：
 ```bash
 /root/chat-backup.sh restore
 ```
-然后重新连接终端即可。
+restore 会安全合并数据库（即使 AI 在运行也不会损坏），然后重新连接终端即可。
+
+### Q: 恢复后会话只显示 ID，看不到中文标题？
+
+A: 这是因为数据库中的 `sessions` 表没有被恢复。执行 `restore` 即可，
+它会用 SQLite ATTACH 把备份的会话标题合并到当前数据库。恢复后界面就能显示中文标题。
 
 ### Q: 守护进程没有启动？
 

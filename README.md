@@ -90,6 +90,7 @@ graw https://raw.githubusercontent.com/user/repo/main/file.sh -o local.sh
 | 10 | 每次重连要手动选 allow | `settings.json` 设 `permission: allow` |
 | 11 | SQLite WAL 库裸拷即损坏 | 用 `sqlite3 .backup` 快照，恢复前退出聊天并清 `-wal/-shm` |
 | 12 | .bashrc 自动 restore 覆盖数据库 → AI 损坏 | .bashrc 只放 daemon，restore 改手动执行 |
+| 16 | restore 跳过数据库 → 会话标题丢失，界面只显示 ID | 改用 SQLite ATTACH 安全合并 sessions + messages |
 | 13 | exec tmux attach 替换 shell → DevEnv 连接断开 | 改为提示信息，不自动 exec |
 | 14 | `cp -rf` 不保留时间戳 → 备份文件全显示同一日期 | 改用 `cp -rfp` 保留原始 mtime |
 | 15 | 会话文件只有 ID 文件名，无法分辨哪个是哪个 | 自动生成 `sessions-index.md`，提取首条用户消息作为标题 |
