@@ -187,6 +187,14 @@ sync_from_repo() {
 do_backup() {
     # 备份锁：防止守护进程与手动 backup 并发执行导致 git index.lock 冲突
     local _bk_lock="/var/run/chat-backup-bk.lock"
+    # 过期锁清理：如果锁存在且超过 300 秒（进程可能崩溃），自动清理
+    if [ -d "$_bk_lock" ]; then
+        local _lock_age=$(( $(date +%s) - $(stat -c %Y "$_bk_lock" 2>/dev/null || echo 0) ))
+        if [ "$_lock_age" -gt 300 ]; then
+            log "BACKUP: 锁已过期 ${_lock_age}s，清理崩溃残留锁"
+            rmdir "$_bk_lock" 2>/dev/null
+        fi
+    fi
     if ! mkdir "$_bk_lock" 2>/dev/null; then
         log "BACKUP: 另一个备份正在进行，跳过"
         return 0
@@ -199,7 +207,7 @@ do_backup() {
         timeout $GIT_TIMEOUT git clone "$REPO_URL" "$REPO_DIR" 2>>"$BACKUP_LOG" >/dev/null
     fi
 
-    cd "$REPO_DIR" || { log "BACKUP: 错误, 仓库目录不可用"; return 1; }
+    cd "$REPO_DIR" || { log "BACKUP: 错误, 仓库目录不可用"; rmdir "$_bk_lock" 2>/dev/null; return 1; }
 
     # 拉取最新变更（必须加 timeout，否则网络问题会导致卡死）
     timeout $GIT_TIMEOUT git pull --rebase origin main 2>>"$BACKUP_LOG" >/dev/null
@@ -211,7 +219,7 @@ do_backup() {
     git add -A
     if git diff --cached --quiet 2>/dev/null; then
         log "BACKUP: 无变更, 跳过"
-        return 0
+        rmdir "$_bk_lock" 2>/dev/null; return 0
     fi
 
     # 提交并推送（push 必须加 timeout）
