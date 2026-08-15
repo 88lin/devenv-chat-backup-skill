@@ -1,108 +1,57 @@
 #!/bin/bash
-# chat-backup.sh — 聊天历史自动备份/恢复脚本（Git 版）
+# chat-backup.sh - 聊天历史自动备份/恢复脚本（Git 版）
 # 使用 GitHub 私有仓库做备份，完全免费
 #
-# === 用法 ===
-#   chat-backup.sh setup     # 首次设置：备份 + 启动守护进程 + 配置 .bashrc
+# 用法:
 #   chat-backup.sh backup    # 备份当前数据到 Git
-#   chat-backup.sh restore   # 从 Git 恢复最新数据
-#   chat-backup.sh daemon    # 启动后台守护进程（每120秒备份）
+#   chat-backup.sh restore   # 从 Git 恢复最新数据（手动执行，不要放 .bashrc）
+#   chat-backup.sh setup     # 设置后台定时备份 + .bashrc 自动备份守护进程
+#   chat-backup.sh daemon    # 启动后台备份守护进程
 #   chat-backup.sh status    # 查看备份状态
-#
-# === 配置 ===
-# 使用前请修改以下变量：
-#   REPO_URL  — 你的 GitHub 私有仓库地址
-#   REPO_DIR  — 本地仓库克隆路径
-#   LOCAL_DIR — 需要备份的数据目录
 
-# ==================== 配置区（请修改） ====================
-REPO_URL="https://github.com/YOUR_USER/devenv-chat-backup.git"
+# === 配置 ===
+REPO_URL="https://github.com/88lin/devenv-chat-backup.git"
 REPO_DIR="/root/chat-backup-new"
-LOCAL_DIR="/root/.huawei/hwcloud"          # DevEnv 聊天数据目录
+LOCAL_DIR="/root/.huawei/hwcloud"
 SCRIPT_PATH="/root/chat-backup.sh"
 BACKUP_LOG="/var/log/chat-backup.log"
 PID_FILE="/var/run/chat-backup.pid"
-BACKUP_INTERVAL=120                        # 备份间隔（秒）
-GIT_TIMEOUT=30                             # git 命令超时（秒）
-# ==========================================================
+BACKUP_INTERVAL=120  # 备份间隔（秒）
+GIT_TIMEOUT=30       # git 命令超时（秒）
+LOCK_DIR="/var/run/chat-backup.lock"
+STALE_LOCK_SEC=300   # 锁超过 300 秒视为过期（崩溃/OOM 恢复）
 
-# 防止 git 等待输入（关键！不加会导致守护进程卡死）
+# 防止 git 等待输入
 export GIT_TERMINAL_PROMPT=0
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$BACKUP_LOG" 2>/dev/null; }
 
-# === 开启自动批准（免确认）===
-# 修改 settings.json 中的 permission 为 allow，避免每次工具调用都要手动确认
-enable_auto_approve() {
-    local settings="$LOCAL_DIR/settings.json"
-    if [ ! -f "$settings" ]; then
-        log "AUTO-APPROVE: settings.json 不存在，跳过"
-        return 0
-    fi
-
-    # 原子锁：防止守护进程与新终端并发写坏 settings.json
-    local lockdir="${settings}.lockdir"
-    if ! mkdir "$lockdir" 2>/dev/null; then
-        log "AUTO-APPROVE: settings.json 被占用，跳过"
-        return 0
-    fi
-
-    # 用 python3 安全修改 JSON
-    if command -v python3 >/dev/null 2>&1; then
-        python3 -c "
-import json, sys
-with open('$settings', 'r') as f:
-    d = json.load(f)
-d['permission'] = {'*': 'allow'}
-with open('$settings', 'w') as f:
-    json.dump(d, f, indent=2, ensure_ascii=False)
-" 2>/dev/null
-        if [ $? -eq 0 ]; then
-            log "AUTO-APPROVE: 已开启"
-            rmdir "$lockdir" 2>/dev/null
-            return 0
+# === 备份锁（防止并发 backup 导致 index.lock 冲突）===
+acquire_lock() {
+    # 清理过期锁
+    if [ -d "$LOCK_DIR" ]; then
+        local lock_age; lock_age=$(( $(date +%s) - $(stat -c %Y "$LOCK_DIR" 2>/dev/null || echo 0) ))
+        if [ "$lock_age" -gt "$STALE_LOCK_SEC" ]; then
+            rmdir "$LOCK_DIR" 2>/dev/null
+            log "LOCK: 清理过期锁 (${lock_age}s)"
         fi
     fi
-
-    # python3 不可用时用 sed 兜底
-    sed -i 's/"\*": "ask"/"\*": "allow"/' "$settings" 2>/dev/null
-    log "AUTO-APPROVE: sed 兜底修改"
-
-    rmdir "$lockdir" 2>/dev/null
+    mkdir "$LOCK_DIR" 2>/dev/null || { log "LOCK: 已有备份在进行中，跳过"; return 1; }
+    return 0
 }
 
-# === 同步本地数据到仓库目录 ===
-# 注意：不能用 rsync，DevEnv 精简环境没有 rsync，用 cp -rf 替代
-# SQLite 是 WAL 模式时，主库文件 + memory.db-wal/memory.db-shm 才构成完整数据。
-# 裸 cp 主库会得到一份"撕裂"的不一致快照：一旦拿它恢复，直接产生
-# "database disk image is malformed" 损坏，聊天记录全部打不开。
-# 因此 SQLite 文件必须用 sqlite3 .backup 生成一致性快照，环境无 sqlite3 时
-# 退化为 cp 并记录警告（不可靠）。
-backup_one() {
-    local f="$1"
-    local src="$LOCAL_DIR/$f"
-    local dst="$REPO_DIR/hwcloud-data/$f"
-    [ -f "$src" ] || return 0
+release_lock() {
+    rmdir "$LOCK_DIR" 2>/dev/null
+}
 
-    case "$f" in
-        *.db|*.sqlite)
-            if command -v sqlite3 >/dev/null 2>&1; then
-                if sqlite3 "$src" ".backup '$dst'" 2>>"$BACKUP_LOG"; then
-                    # 仓库目录的 -wal/-shm 属于旧拷贝残留，必须清掉避免误恢复
-                    rm -f "$dst-wal" "$dst-shm"
-                else
-                    log "BACKUP: $f 一致性快照失败（库损坏或被占用），跳过"
-                fi
-            else
-                cp -f "$src" "$dst" 2>/dev/null
-                rm -f "$dst-wal" "$dst-shm"
-                log "BACKUP: 警告: 环境无 sqlite3，$f 使用裸 cp 备份（不可靠，建议安装 sqlite3）"
-            fi
-            ;;
-        *)
-            cp -f "$src" "$dst" 2>/dev/null
-            ;;
-    esac
+# === SQLite 一致性备份 ===
+sqlite_backup() {
+    local src="$1" dst="$2"
+    if [ -f "$src" ] && command -v sqlite3 >/dev/null 2>&1; then
+        sqlite3 "$src" ".backup '$dst'" 2>/dev/null
+    elif [ -f "$src" ]; then
+        cp -f "$src" "$dst"
+    fi
 }
 
 # === 生成可读的会话索引 ===
@@ -115,7 +64,7 @@ generate_session_index() {
     local index_md="$REPO_DIR/hwcloud-data/sessions-index.md"
     local index_json="$REPO_DIR/hwcloud-data/sessions-index.json"
 
-    python3 - "$sessions_dir" "$index_md" "$index_json" << 'PYINDEX' 2>/dev/null
+    python3 - "$sessions_dir" "$index_md" "$index_json" << 'PYEOF' 2>/dev/null
 import json, os, glob, sys
 from datetime import datetime
 
@@ -159,6 +108,7 @@ for f in files:
         "size": size
     })
 
+# 生成 Markdown 索引
 with open(index_md, 'w', encoding='utf-8') as f:
     f.write(f"# 会话索引（共 {len(entries)} 个会话）\n\n")
     f.write(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
@@ -168,17 +118,20 @@ with open(index_md, 'w', encoding='utf-8') as f:
         f.write(f"| {i} | {e['mtime']} | {e['messages']} | {e['title']} | `{e['id']}` |\n")
     f.write(f"\n> 在 GitHub 仓库中点击对应的 `.jsonl` 文件可查看完整对话内容。\n")
 
+# 生成 JSON 索引
 with open(index_json, 'w', encoding='utf-8') as f:
     json.dump(entries, f, ensure_ascii=False, indent=2)
-PYINDEX
-    log "INDEX: 已生成会话索引"
+
+PYEOF
+    log "INDEX: 已生成会话索引 ($index_md)"
 }
 
+# === 同步本地数据到仓库目录 ===
 sync_to_repo() {
     [ ! -d "$LOCAL_DIR" ] && return 0
     mkdir -p "$REPO_DIR/hwcloud-data/sessions"
 
-    # 同步 sessions：复制本地文件到仓库
+    # 同步 sessions（-p 保留原始时间戳，不再全部变成备份时间）
     if [ -d "$LOCAL_DIR/sessions" ]; then
         cp -rfp "$LOCAL_DIR/sessions/"* "$REPO_DIR/hwcloud-data/sessions/" 2>/dev/null
         # 删除仓库中已不在本地的文件（清理过期会话）
@@ -189,88 +142,98 @@ sync_to_repo() {
         done
     fi
 
-    # 生成可读的会话索引
+    # 生成可读的会话索引（解决"全是数字英文看不出哪个是哪个"的问题）
     generate_session_index
 
-    # 同步其他重要文件（SQLite 走一致性快照）
-    for f in memory.db audit.db settings.json SOUL.md user_info.json; do
-        backup_one "$f"
+    # 同步数据库（用 sqlite3 .backup 保证一致性，不裸拷 WAL 库）
+    sqlite_backup "$LOCAL_DIR/memory.db" "$REPO_DIR/hwcloud-data/memory.db"
+    sqlite_backup "$LOCAL_DIR/audit.db" "$REPO_DIR/hwcloud-data/audit.db"
+
+    # 同步其他文件
+    for f in settings.json SOUL.md user_info.json; do
+        [ -f "$LOCAL_DIR/$f" ] && cp -f "$LOCAL_DIR/$f" "$REPO_DIR/hwcloud-data/$f"
     done
 }
 
-# === 从仓库目录恢复到本地 ===
-# 注意：只覆盖不删除，避免删除本地新创建的会话
-# 警告：SQLite 是 WAL 模式时，运行中的聊天进程持有 -wal/-shm 帧，
-#       此时直接覆盖主库文件会造成主库与 WAL 帧错位 → 数据库损坏。
-#       因此：
-#       1) 覆盖前探测聊天进程；检测到在运行则本次恢复直接跳过（新终端时机兜底）
-#       2) 覆盖后清除本地残留的 -wal/-shm，让应用重启时干净重建
-#       3) 覆盖前先留一份现场快照到 restore-points/，出错可回滚
-# 聊天进程名不匹配时可用环境变量覆盖：HWCLOUD_PROC="another -arg"
-HWCLOUD_PROC="${HWCLOUD_PROC:-hwcloud}"
+# === 安全合并会话数据库（AI 运行时也能用）===
+# 用 SQLite ATTACH + INSERT OR REPLACE 把备份的会话记录合并到当前数据库
+# 这样即使 AI 进程在运行，也能安全恢复会话标题，不会损坏数据库
+merge_session_db() {
+    local backup_db="$1"   # 备份的 memory.db 路径
+    local live_db="$2"     # 当前正在用的 memory.db 路径
+    [ -f "$backup_db" ] || return 0
+    [ -f "$live_db" ] || return 0
+    command -v sqlite3 >/dev/null 2>&1 || return 0
 
+    # 复制备份数据库到临时文件（避免直接 ATTACH 时的锁问题）
+    local tmp_db="/tmp/backup_merge_$$.db"
+    cp -f "$backup_db" "$tmp_db" 2>/dev/null
+
+    # 用 ATTACH + INSERT OR REPLACE 合并 sessions（含标题）和 messages
+    sqlite3 "$live_db" "$(printf "ATTACH DATABASE '%s' AS bk;\nINSERT OR REPLACE INTO sessions SELECT * FROM bk.sessions;\nINSERT OR IGNORE INTO messages (message_uid, session_id, role, content_json, search_text, tool_name, tool_call_id, tool_calls, finish_reason, reasoning, timestamp, token_count) SELECT message_uid, session_id, role, content_json, search_text, tool_name, tool_call_id, tool_calls, finish_reason, reasoning, timestamp, token_count FROM bk.messages;\nDETACH DATABASE bk;\n" "$tmp_db")" 2>/dev/null
+
+    local rc=$?
+    rm -f "$tmp_db"
+
+    if [ $rc -eq 0 ]; then
+        local n; n=$(sqlite3 "$live_db" "SELECT COUNT(*) FROM sessions WHERE title != '';" 2>/dev/null || echo 0)
+        log "MERGE: 数据库合并完成, 有标题的会话=$n"
+    else
+        log "MERGE: 数据库合并失败 (exit=$rc)"
+    fi
+    return $rc
+}
+
+# === 从仓库目录恢复到本地 ===
 sync_from_repo() {
     [ ! -d "$REPO_DIR/hwcloud-data" ] && return 0
+    mkdir -p "$LOCAL_DIR/sessions" "$LOCAL_DIR/logs"
 
-    # 探测聊天进程是否在运行（WAL 防损坏）
-    if pgrep -f "$HWCLOUD_PROC" >/dev/null 2>&1; then
-        log "RESTORE: 检测到 '$HWCLOUD_PROC' 正在运行，跳过数据库覆盖（避免 WAL 损坏）；请先退出聊天再手动恢复"
-        return 1
+    local ai_running=0
+    pgrep -f hwcloud >/dev/null 2>&1 && ai_running=1
+
+    if [ "$ai_running" -eq 1 ]; then
+        log "RESTORE: AI 进程运行中，使用安全合并模式恢复数据库"
+        # 安全合并 memory.db（会话标题 + 消息记录）
+        if [ -f "$REPO_DIR/hwcloud-data/memory.db" ]; then
+            merge_session_db "$REPO_DIR/hwcloud-data/memory.db" "$LOCAL_DIR/memory.db"
+        fi
+    else
+        # AI 未运行，可以直接恢复整个数据库
+        for db in memory.db audit.db; do
+            wal_file="$LOCAL_DIR/${db}-wal"
+            if [ -f "$wal_file" ]; then
+                local wal_mtime; wal_mtime=$(stat -c %Y "$wal_file" 2>/dev/null || echo 0)
+                local now; now=$(date +%s)
+                local age=$((now - wal_mtime))
+                if [ "$age" -lt 120 ]; then
+                    log "RESTORE: ${db}-wal 在 ${age}s 前被修改，改用安全合并"
+                    [ "$db" = "memory.db" ] && merge_session_db "$REPO_DIR/hwcloud-data/$db" "$LOCAL_DIR/$db"
+                    continue
+                fi
+            fi
+            # 恢复数据库
+            [ -f "$REPO_DIR/hwcloud-data/$db" ] && cp -f "$REPO_DIR/hwcloud-data/$db" "$LOCAL_DIR/$db"
+            # 清除本地 WAL/SHM，让 SQLite 重建
+            rm -f "$LOCAL_DIR/${db}-wal" "$LOCAL_DIR/${db}-shm" "$LOCAL_DIR/${db}-journal"
+        done
     fi
 
-    # WAL 活跃度检测：即使进程未检测到，如果 WAL 文件在最近 120 秒内被修改过，
-    # 说明数据库仍在活跃使用（可能是进程刚重启的间隙），跳过 restore 避免覆盖+删 WAL 导致损坏
-    local _now_ts; _now_ts=$(date +%s)
-    for _wal in "$LOCAL_DIR/memory.db-wal" "$LOCAL_DIR/audit.db-wal"; do
-        if [ -f "$_wal" ]; then
-            local _wal_mtime _wal_age
-            _wal_mtime=$(stat -c %Y "$_wal" 2>/dev/null || echo 0)
-            _wal_age=$((_now_ts - _wal_mtime))
-            if [ "$_wal_age" -lt 120 ]; then
-                log "RESTORE: WAL 文件 $_wal 在 ${_wal_age}s 前被修改，数据库活跃使用中，跳过 restore"
-                return 1
-            fi
-        fi
-    done
-
-    mkdir -p "$LOCAL_DIR/sessions" "$LOCAL_DIR/logs" "$REPO_DIR/restore-points"
-
+    # 恢复 sessions（-p 保留原始时间戳）
     if [ -d "$REPO_DIR/hwcloud-data/sessions" ]; then
         cp -rfp "$REPO_DIR/hwcloud-data/sessions/"* "$LOCAL_DIR/sessions/" 2>/dev/null
     fi
 
-    # 覆盖前留现场快照，便于回滚
-    for f in memory.db audit.db; do
-        [ -f "$LOCAL_DIR/$f" ] && cp -f "$LOCAL_DIR/$f" "$REPO_DIR/restore-points/$(date '+%Y%m%d-%H%M%S')-$f.bak" 2>/dev/null
+    # 恢复其他文件
+    for f in settings.json SOUL.md user_info.json; do
+        [ -f "$REPO_DIR/hwcloud-data/$f" ] && cp -fp "$REPO_DIR/hwcloud-data/$f" "$LOCAL_DIR/$f"
     done
-
-    for f in memory.db audit.db settings.json SOUL.md user_info.json; do
-        [ -f "$REPO_DIR/hwcloud-data/$f" ] && cp -f "$REPO_DIR/hwcloud-data/$f" "$LOCAL_DIR/$f"
-    done
-
-    # 关键：清掉本地旧 WAL/SHM，避免新旧帧错位导致的库损坏
-    rm -f "$LOCAL_DIR/memory.db-wal" "$LOCAL_DIR/memory.db-shm"
-    rm -f "$LOCAL_DIR/audit.db-wal"  "$LOCAL_DIR/audit.db-shm"
-
-    log "RESTORE: 数据库已覆盖，并已清除本地 -wal/-shm，请重启聊天应用"
 }
 
 # === 备份 ===
 do_backup() {
-    # 备份锁：防止守护进程与手动 backup 并发执行导致 git index.lock 冲突
-    local _bk_lock="/var/run/chat-backup-bk.lock"
-    # 过期锁清理：如果锁存在且超过 300 秒（进程可能崩溃），自动清理
-    if [ -d "$_bk_lock" ]; then
-        local _lock_age=$(( $(date +%s) - $(stat -c %Y "$_bk_lock" 2>/dev/null || echo 0) ))
-        if [ "$_lock_age" -gt 300 ]; then
-            log "BACKUP: 锁已过期 ${_lock_age}s，清理崩溃残留锁"
-            rmdir "$_bk_lock" 2>/dev/null
-        fi
-    fi
-    if ! mkdir "$_bk_lock" 2>/dev/null; then
-        log "BACKUP: 另一个备份正在进行，跳过"
-        return 0
-    fi
+    # 获取备份锁
+    acquire_lock || return 0
 
     log "BACKUP: 开始"
 
@@ -279,9 +242,9 @@ do_backup() {
         timeout $GIT_TIMEOUT git clone "$REPO_URL" "$REPO_DIR" 2>>"$BACKUP_LOG" >/dev/null
     fi
 
-    cd "$REPO_DIR" || { log "BACKUP: 错误, 仓库目录不可用"; rmdir "$_bk_lock" 2>/dev/null; return 1; }
+    cd "$REPO_DIR" || { log "BACKUP: 错误, 仓库目录不可用"; release_lock; return 1; }
 
-    # 拉取最新变更（必须加 timeout，否则网络问题会导致卡死）
+    # 拉取最新变更（带超时）
     timeout $GIT_TIMEOUT git pull --rebase origin main 2>>"$BACKUP_LOG" >/dev/null
 
     # 同步本地数据到仓库
@@ -291,42 +254,38 @@ do_backup() {
     git add -A
     if git diff --cached --quiet 2>/dev/null; then
         log "BACKUP: 无变更, 跳过"
-        rmdir "$_bk_lock" 2>/dev/null; return 0
+        release_lock
+        return 0
     fi
 
-    # 提交并推送（push 必须加 timeout）
+    # 提交并推送（带超时）
     git commit -m "Backup: $(date '+%Y-%m-%d %H:%M:%S')" 2>>"$BACKUP_LOG" >/dev/null
     timeout $GIT_TIMEOUT git push origin main 2>>"$BACKUP_LOG" >/dev/null
 
     local n; n=$(find "$LOCAL_DIR/sessions" -name "*.jsonl" 2>/dev/null | wc -l)
     log "BACKUP: 完成, 会话数=$n"
-    rmdir "$_bk_lock" 2>/dev/null
+    release_lock
 }
 
 # === 恢复 ===
 do_restore() {
     log "RESTORE: 开始"
 
+    # 克隆或拉取最新
     if [ ! -d "$REPO_DIR/.git" ]; then
         timeout $GIT_TIMEOUT git clone "$REPO_URL" "$REPO_DIR" 2>>"$BACKUP_LOG" >/dev/null
     else
         (cd "$REPO_DIR" && timeout $GIT_TIMEOUT git pull --rebase origin main 2>>"$BACKUP_LOG" >/dev/null)
     fi
 
-    if ! sync_from_repo; then
-        log "RESTORE: 已跳过（原因见上方日志）"
-        return 0
-    fi
-
-    # 恢复后确保自动批准开启
-    enable_auto_approve
+    # 从仓库恢复到本地
+    sync_from_repo
 
     local n; n=$(find "$LOCAL_DIR/sessions" -name "*.jsonl" 2>/dev/null | wc -l)
     log "RESTORE: 完成, 会话数=$n"
 }
 
-# === 后台守护进程 ===
-# 注意：crontab 在 DevEnv 不可用，用 setsid + nohup + while 循环替代
+# === 后台定时备份守护进程 ===
 start_daemon() {
     # 先杀掉旧进程
     if [ -f "$PID_FILE" ]; then
@@ -334,28 +293,32 @@ start_daemon() {
         [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null && kill "$old_pid" 2>/dev/null
     fi
 
-    # 启动后台循环
-    # 关键：cd /root 防止 CWD 丢失（仓库目录可能被删除导致 git 命令失败）
+    # 检查是否已在运行
+    if [ -f "$PID_FILE" ]; then
+        local pid; pid=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "守护进程已在运行 (PID: $pid)"
+            return 0
+        fi
+    fi
+
+    # 启动后台循环（cd /root 避免 CWD 丢失问题）
     nohup setsid bash -c "cd /root; echo \$\$ > '$PID_FILE'; while true; do '$SCRIPT_PATH' backup; sleep $BACKUP_INTERVAL; done" >/dev/null 2>&1 &
     log "DAEMON: 已启动"
 }
 
-# === 首次设置 ===
+# === 设置 ===
 do_setup() {
-    echo "1. 开启自动批准（免确认）..."
-    enable_auto_approve
-    echo "   ✅"
-
-    echo "2. 首次备份..."
+    echo "1. 首次备份..."
     do_backup
     echo "   ✅"
 
-    echo "3. 启动后台备份（每 ${BACKUP_INTERVAL} 秒）..."
+    echo "2. 启动后台备份（每 ${BACKUP_INTERVAL} 秒）..."
     start_daemon
     sleep 1
     echo "   ✅ PID: $(cat "$PID_FILE" 2>/dev/null)"
 
-    echo "4. 修改 .bashrc..."
+    echo "3. 修改 .bashrc..."
     local M="# >>> chat-backup auto-restore >>>"
     local ME="# <<< chat-backup auto-restore <<<"
     grep -q "$M" /root/.bashrc 2>/dev/null && sed -i "/${M}/,/${ME}/d" /root/.bashrc
@@ -408,11 +371,10 @@ do_status() {
 
 # === 主逻辑 ===
 case "${1:-}" in
-    backup)       do_backup ;;
-    restore)      do_restore ;;
-    setup)        do_setup ;;
-    daemon)       start_daemon ;;
-    status)       do_status ;;
-    auto-approve) enable_auto_approve; echo "✅ 自动批准已开启" ;;
-    *) echo "用法: $0 {backup|restore|setup|daemon|status|auto-approve}"; exit 1 ;;
+    backup)  do_backup ;;
+    restore) do_restore ;;
+    setup)   do_setup ;;
+    daemon)  start_daemon ;;
+    status)  do_status ;;
+    *) echo "用法: $0 {backup|restore|setup|daemon|status}"; exit 1 ;;
 esac
