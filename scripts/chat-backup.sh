@@ -614,6 +614,147 @@ do_status() {
     tail -5 "$BACKUP_LOG" 2>/dev/null || echo "  (无日志)"
 }
 
+# === 删除会话 ===
+# 用法:
+#   chat-backup.sh delete          # 交互式列表，输入序号删除
+#   chat-backup.sh delete 3        # 删除第3个
+#   chat-backup.sh delete 3,5,7    # 删除第3、5、7个
+#   chat-backup.sh delete 3-6      # 删除第3到6个
+do_delete() {
+    local db="$LOCAL_DIR/memory.db"
+    [ -f "$db" ] || { echo "❌ 数据库不存在"; return 1; }
+
+    # 列出所有会话，返回序号和 session_id 的映射
+    local list_file="/tmp/chat-delete-list.$$"
+    python3 - "$db" "$LOCAL_DIR/sessions" "$list_file" << 'PYEOF'
+import json, sqlite3, sys, os
+from datetime import datetime
+
+db_path, sessions_dir, list_file = sys.argv[1], sys.argv[2], sys.argv[3]
+
+conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+cur = conn.cursor()
+cur.execute("""
+    SELECT session_id, start_timestamp, message_count, title
+    FROM sessions ORDER BY start_timestamp
+""")
+
+rows = cur.fetchall()
+conn.close()
+
+print(f"\n{'序号':>4}  {'日期':<20} {'消息数':>6}  {'标题'}")
+print("-" * 80)
+
+mapping = []
+for i, (sid, ts, cnt, title) in enumerate(rows, 1):
+    time_str = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M') if ts else "?"
+    # 从 jsonl 获取更好的标题
+    jsonl = os.path.join(sessions_dir, f"{sid}.jsonl")
+    display_title = title or ""
+    if not display_title and os.path.exists(jsonl):
+        with open(jsonl, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                try:
+                    d = json.loads(line.strip())
+                    if d.get("Role") == 0 and d.get("Content"):
+                        display_title = d["Content"][:50].replace('\n', ' ')
+                        break
+                except:
+                    continue
+    if not display_title:
+        display_title = "(空会话)"
+    print(f"{i:>4}  {time_str:<20} {cnt:>6}  {display_title}")
+    mapping.append(f"{i} {sid}")
+
+with open(list_file, 'w') as f:
+    f.write('\n'.join(mapping) + '\n')
+PYEOF
+
+    local total
+    total=$(wc -l < "$list_file")
+    echo ""
+
+    # 获取要删除的序号
+    local selection="${2:-}"
+    if [ -z "$selection" ]; then
+        echo "输入要删除的序号（多个用逗号分隔，范围用横杠，如 3,5,7-9）:"
+        read -r selection
+        [ -z "$selection" ] && { echo "取消"; rm -f "$list_file"; return 0; }
+    fi
+
+    # 解析序号（支持 3,5,7-9 格式）
+    local numbers=""
+    IFS=',' read -ra parts <<< "$selection"
+    for part in "${parts[@]}"; do
+        if [[ "$part" == *-* ]]; then
+            local start=${part%-*} end=${part#*-}
+            for ((n=start; n<=end; n++)); do
+                numbers="$numbers $n"
+            done
+        else
+            numbers="$numbers $part"
+        fi
+    done
+
+    # 收集要删除的 session_id
+    local to_delete=""
+    for num in $numbers; do
+        local sid
+        sid=$(awk -v n="$num" '$1==n{print $2}' "$list_file")
+        if [ -n "$sid" ]; then
+            to_delete="$to_delete $sid"
+        else
+            echo "⚠️ 序号 $num 不存在，跳过"
+        fi
+    done
+
+    rm -f "$list_file"
+    [ -z "$to_delete" ] && { echo "没有有效的会话可删除"; return 0; }
+
+    # 确认
+    local count
+    count=$(echo $to_delete | wc -w)
+    echo ""
+    echo "将删除 $count 个会话："
+    for sid in $to_delete; do
+        local title
+        title=$(sqlite3 "$db" "SELECT title FROM sessions WHERE session_id='$sid';" 2>/dev/null)
+        [ -z "$title" ] && title="(从 jsonl 获取)"
+        echo "  - $sid  $title"
+    done
+    echo ""
+    echo -n "确认删除？(y/N): "
+    local confirm
+    read -r confirm
+    [[ "$confirm" != [yY] ]] && { echo "取消"; return 0; }
+
+    # 执行删除
+    local deleted=0
+    for sid in $to_delete; do
+        # 删除 DB 记录
+        sqlite3 "$db" "DELETE FROM messages WHERE session_id='$sid';" 2>/dev/null
+        sqlite3 "$db" "DELETE FROM sessions WHERE session_id='$sid';" 2>/dev/null
+        # 删除文件
+        rm -f "$LOCAL_DIR/sessions/${sid}.jsonl" "$LOCAL_DIR/sessions/${sid}.metadata.json"
+        # 删除备份仓库中的文件
+        rm -f "$REPO_DIR/hwcloud-data/sessions/${sid}.jsonl" "$REPO_DIR/hwcloud-data/sessions/${sid}.metadata.json"
+        deleted=$((deleted + 1))
+        log "DELETE: 删除会话 $sid"
+    done
+
+    # 从备份仓库 DB 也删除
+    if [ -f "$REPO_DIR/hwcloud-data/memory.db" ]; then
+        for sid in $to_delete; do
+            sqlite3 "$REPO_DIR/hwcloud-data/memory.db" \
+                "DELETE FROM messages WHERE session_id='$sid'; DELETE FROM sessions WHERE session_id='$sid';" 2>/dev/null
+        done
+    fi
+
+    echo ""
+    echo "✅ 已删除 $deleted 个会话"
+    echo "   下次备份会自动同步到 GitHub"
+}
+
 # === 主逻辑 ===
 case "${1:-}" in
     backup)  do_backup ;;
@@ -622,5 +763,13 @@ case "${1:-}" in
     daemon)       start_daemon ;;
     status)       do_status ;;
     auto-approve) auto_approve ;;
-    *) echo "用法: $0 {backup|restore|setup|daemon|status|auto-approve}"; exit 1 ;;
+    delete)       do_delete "$@" ;;
+    *) echo "用法: $0 {backup|restore|setup|daemon|status|auto-approve|delete}"
+       echo ""
+       echo "删除会话:"
+       echo "  $0 delete          # 交互式选择"
+       echo "  $0 delete 3        # 删除第3个"
+       echo "  $0 delete 3,5,7    # 删除多个"
+       echo "  $0 delete 3-6      # 删除范围"
+       exit 1 ;;
 esac
