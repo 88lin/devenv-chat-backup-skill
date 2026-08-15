@@ -616,100 +616,179 @@ do_status() {
 
 # === 删除会话 ===
 # 用法:
-#   chat-backup.sh delete          # 交互式列表，输入序号删除
-#   chat-backup.sh delete 3        # 删除第3个
-#   chat-backup.sh delete 3,5,7    # 删除第3、5、7个
-#   chat-backup.sh delete 3-6      # 删除第3到6个
+#   chat-backup.sh delete                    # 交互式：输入关键词搜索 → 选序号删除
+#   chat-backup.sh delete "facetmark"        # 按关键词搜索匹配的会话
+#   chat-backup.sh delete --empty            # 列出空会话（消息数≤2），方便批量清理
+#   chat-backup.sh delete --date 0815        # 按日期筛选（MM-DD 或 YYYY-MM-DD）
+#   chat-backup.sh delete --old 7            # 列出7天前的会话
+#   搜索结果中输入序号删除，支持 3,5,7 或 3-6 或 all
 do_delete() {
     local db="$LOCAL_DIR/memory.db"
     [ -f "$db" ] || { echo "❌ 数据库不存在"; return 1; }
 
-    # 列出所有会话，返回序号和 session_id 的映射
-    local list_file="/tmp/chat-delete-list.$$"
-    python3 - "$db" "$LOCAL_DIR/sessions" "$list_file" << 'PYEOF'
-import json, sqlite3, sys, os
-from datetime import datetime
+    local keyword="" filter_empty=false filter_date="" filter_old=""
+    local args=()
+    while [ $# -gt 1 ]; do
+        case "$2" in
+            --empty) filter_empty=true; shift ;;
+            --date)  filter_date="$3"; shift 2 ;;
+            --old)   filter_old="$3"; shift 2 ;;
+            --*)     shift ;;
+            *)       keyword="$2"; shift; break ;;
+        esac
+    done
 
-db_path, sessions_dir, list_file = sys.argv[1], sys.argv[2], sys.argv[3]
+    # 无参数时先问搜索方式
+    if [ $# -eq 1 ] && [ -z "$keyword" ] && [ "$filter_empty" = "false" ] && [ -z "$filter_date" ] && [ -z "$filter_old" ]; then
+        local total_sessions
+        total_sessions=$(sqlite3 "$db" "SELECT count(*) FROM sessions;" 2>/dev/null)
+        echo "共 $total_sessions 个会话"
+        echo ""
+        echo "搜索方式:"
+        echo "  1) 输入关键词搜索标题（如 facetmark、你好）"
+        echo "  2) empty  - 列出空会话（≤2条消息）"
+        echo "  3) old N  - 列出N天前的会话"
+        echo "  4) date MMDD - 按日期筛选"
+        echo "  5) all   - 列出全部（慎用）"
+        echo ""
+        echo -n "请选择: "
+        read -r choice
+        case "$choice" in
+            empty)  filter_empty=true ;;
+            old)    echo -n "几天前？"; read -r filter_old ;;
+            date)   echo -n "日期(MMDD如0815): "; read -r filter_date ;;
+            all)    keyword="" ;;
+            *)      keyword="$choice" ;;
+        esac
+    fi
+
+    # 构建 SQL 过滤条件
+    python3 - "$db" "$LOCAL_DIR/sessions" "$keyword" "$filter_empty" "$filter_date" "$filter_old" << 'PYEOF'
+import json, sqlite3, sys, os, re
+from datetime import datetime, timedelta
+
+db_path, sessions_dir, keyword, filter_empty, filter_date, filter_old = sys.argv[1:7]
 
 conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
 cur = conn.cursor()
-cur.execute("""
-    SELECT session_id, start_timestamp, message_count, title
-    FROM sessions ORDER BY start_timestamp
-""")
 
+sql = "SELECT session_id, start_timestamp, message_count, title FROM sessions"
+conditions = []
+
+if filter_empty == "true":
+    conditions.append("message_count <= 2")
+
+if filter_date:
+    # 支持 0815 或 2026-08-15
+    fd = filter_date.replace("-", "")
+    if len(fd) == 4:  # MMDD
+        conditions.append(f"strftime('%m%d', start_timestamp, 'unixepoch') = '{fd}'")
+    elif len(fd) == 8:  # YYYYMMDD
+        conditions.append(f"strftime('%Y%m%d', start_timestamp, 'unixepoch') = '{fd}'")
+
+if filter_old:
+    cutoff = (datetime.now() - timedelta(days=int(filter_old))).timestamp()
+    conditions.append(f"start_timestamp < {cutoff}")
+
+if conditions:
+    sql += " WHERE " + " AND ".join(conditions)
+sql += " ORDER BY start_timestamp"
+
+cur.execute(sql)
 rows = cur.fetchall()
 conn.close()
 
-print(f"\n{'序号':>4}  {'日期':<20} {'消息数':>6}  {'标题'}")
-print("-" * 80)
-
-mapping = []
-for i, (sid, ts, cnt, title) in enumerate(rows, 1):
-    time_str = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M') if ts else "?"
-    # 从 jsonl 获取更好的标题
+# 获取每个会话的显示标题（从 jsonl 第一条用户消息）
+def get_display_title(sid, title, cnt):
+    if title:
+        return title[:60].replace('\n', ' ')
     jsonl = os.path.join(sessions_dir, f"{sid}.jsonl")
-    display_title = title or ""
-    if not display_title and os.path.exists(jsonl):
+    if os.path.exists(jsonl):
         with open(jsonl, 'r', encoding='utf-8', errors='replace') as f:
             for line in f:
                 try:
                     d = json.loads(line.strip())
                     if d.get("Role") == 0 and d.get("Content"):
-                        display_title = d["Content"][:50].replace('\n', ' ')
-                        break
+                        return d["Content"][:60].replace('\n', ' ')
                 except:
                     continue
-    if not display_title:
-        display_title = "(空会话)"
-    print(f"{i:>4}  {time_str:<20} {cnt:>6}  {display_title}")
-    mapping.append(f"{i} {sid}")
+    return "(空会话)" if cnt <= 2 else "(无标题)"
 
+# 关键词过滤
+results = []
+for sid, ts, cnt, title in rows:
+    disp = get_display_title(sid, title, cnt)
+    if keyword:
+        # 同时搜索标题和 session_id
+        if keyword.lower() not in disp.lower() and keyword.lower() not in sid.lower():
+            continue
+    results.append((sid, ts, cnt, disp))
+
+if not results:
+    print("没有匹配的会话")
+    sys.exit(0)
+
+print(f"\n找到 {len(results)} 个会话：\n")
+print(f"{'序号':>4}  {'日期':<17} {'消息':>5}  {'标题'}")
+print("-" * 90)
+
+for i, (sid, ts, cnt, disp) in enumerate(results, 1):
+    time_str = datetime.fromtimestamp(ts).strftime('%m-%d %H:%M') if ts else "????"
+    print(f"{i:>4}  {time_str:<17} {cnt:>5}  {disp}")
+
+# 保存映射到临时文件
+list_file = f"/tmp/chat-delete-list.{os.getpid()}"
 with open(list_file, 'w') as f:
-    f.write('\n'.join(mapping) + '\n')
+    for i, (sid, ts, cnt, disp) in enumerate(results, 1):
+        f.write(f"{i}|{sid}|{disp}\n")
+print(f"\n映射文件: {list_file}")
 PYEOF
+
+    local list_file=$(ls -t /tmp/chat-delete-list.* 2>/dev/null | head -1)
+    [ -f "$list_file" ] || return 0
 
     local total
     total=$(wc -l < "$list_file")
+
     echo ""
+    echo "输入要删除的序号（如 3 或 3,5,7 或 3-6 或 all）:"
+    read -r selection
+    [ -z "$selection" ] && { echo "取消"; rm -f "$list_file"; return 0; }
 
-    # 获取要删除的序号
-    local selection="${2:-}"
-    if [ -z "$selection" ]; then
-        echo "输入要删除的序号（多个用逗号分隔，范围用横杠，如 3,5,7-9）:"
-        read -r selection
-        [ -z "$selection" ] && { echo "取消"; rm -f "$list_file"; return 0; }
-    fi
-
-    # 解析序号（支持 3,5,7-9 格式）
+    # 解析选择
     local numbers=""
-    IFS=',' read -ra parts <<< "$selection"
-    for part in "${parts[@]}"; do
-        if [[ "$part" == *-* ]]; then
-            local start=${part%-*} end=${part#*-}
-            for ((n=start; n<=end; n++)); do
-                numbers="$numbers $n"
-            done
-        else
-            numbers="$numbers $part"
-        fi
-    done
+    if [ "$selection" = "all" ]; then
+        numbers=$(seq 1 $total)
+    else
+        IFS=',' read -ra parts <<< "$selection"
+        for part in "${parts[@]}"; do
+            if [[ "$part" == *-* ]]; then
+                local start=${part%-*} end=${part#*-}
+                for ((n=start; n<=end; n++)); do
+                    numbers="$numbers $n"
+                done
+            else
+                numbers="$numbers $part"
+            fi
+        done
+    fi
 
     # 收集要删除的 session_id
     local to_delete=""
     for num in $numbers; do
-        local sid
-        sid=$(awk -v n="$num" '$1==n{print $2}' "$list_file")
-        if [ -n "$sid" ]; then
+        local line
+        line=$(grep "^${num}|" "$list_file")
+        if [ -n "$line" ]; then
+            local sid=${line#*|}
+            sid=${sid%%|*}
             to_delete="$to_delete $sid"
         else
-            echo "⚠️ 序号 $num 不存在，跳过"
+            echo "⚠️ 序号 $num 不存在"
         fi
     done
 
     rm -f "$list_file"
-    [ -z "$to_delete" ] && { echo "没有有效的会话可删除"; return 0; }
+    [ -z "$to_delete" ] && { echo "没有有效的会话"; return 0; }
 
     # 确认
     local count
@@ -718,41 +797,30 @@ PYEOF
     echo "将删除 $count 个会话："
     for sid in $to_delete; do
         local title
-        title=$(sqlite3 "$db" "SELECT title FROM sessions WHERE session_id='$sid';" 2>/dev/null)
-        [ -z "$title" ] && title="(从 jsonl 获取)"
-        echo "  - $sid  $title"
+        title=$(sqlite3 "$db" "SELECT substr(title,1,60) FROM sessions WHERE session_id='$sid';" 2>/dev/null)
+        [ -z "$title" ] && title="(从jsonl获取)"
+        echo "  ❌ $sid  $title"
     done
     echo ""
     echo -n "确认删除？(y/N): "
-    local confirm
     read -r confirm
     [[ "$confirm" != [yY] ]] && { echo "取消"; return 0; }
 
     # 执行删除
     local deleted=0
     for sid in $to_delete; do
-        # 删除 DB 记录
-        sqlite3 "$db" "DELETE FROM messages WHERE session_id='$sid';" 2>/dev/null
-        sqlite3 "$db" "DELETE FROM sessions WHERE session_id='$sid';" 2>/dev/null
-        # 删除文件
+        sqlite3 "$db" "DELETE FROM messages WHERE session_id='$sid'; DELETE FROM sessions WHERE session_id='$sid';" 2>/dev/null
         rm -f "$LOCAL_DIR/sessions/${sid}.jsonl" "$LOCAL_DIR/sessions/${sid}.metadata.json"
-        # 删除备份仓库中的文件
         rm -f "$REPO_DIR/hwcloud-data/sessions/${sid}.jsonl" "$REPO_DIR/hwcloud-data/sessions/${sid}.metadata.json"
+        if [ -f "$REPO_DIR/hwcloud-data/memory.db" ]; then
+            sqlite3 "$REPO_DIR/hwcloud-data/memory.db" \
+                "DELETE FROM messages WHERE session_id='$sid'; DELETE FROM sessions WHERE session_id='$sid';" 2>/dev/null
+        fi
         deleted=$((deleted + 1))
         log "DELETE: 删除会话 $sid"
     done
 
-    # 从备份仓库 DB 也删除
-    if [ -f "$REPO_DIR/hwcloud-data/memory.db" ]; then
-        for sid in $to_delete; do
-            sqlite3 "$REPO_DIR/hwcloud-data/memory.db" \
-                "DELETE FROM messages WHERE session_id='$sid'; DELETE FROM sessions WHERE session_id='$sid';" 2>/dev/null
-        done
-    fi
-
-    echo ""
-    echo "✅ 已删除 $deleted 个会话"
-    echo "   下次备份会自动同步到 GitHub"
+    echo "✅ 已删除 $deleted 个会话，下次备份自动同步到 GitHub"
 }
 
 # === 主逻辑 ===
@@ -767,9 +835,11 @@ case "${1:-}" in
     *) echo "用法: $0 {backup|restore|setup|daemon|status|auto-approve|delete}"
        echo ""
        echo "删除会话:"
-       echo "  $0 delete          # 交互式选择"
-       echo "  $0 delete 3        # 删除第3个"
-       echo "  $0 delete 3,5,7    # 删除多个"
-       echo "  $0 delete 3-6      # 删除范围"
+       echo "  $0 delete                    # 交互式搜索"
+       echo "  $0 delete \"关键词\"           # 按标题搜索"
+       echo "  $0 delete --empty            # 列出空会话(≤2条消息)"
+       echo "  $0 delete --date 0815        # 按日期筛选"
+       echo "  $0 delete --old 7            # 列出7天前的"
+       echo "  搜索结果中: 3 或 3,5,7 或 3-6 或 all"
        exit 1 ;;
 esac
