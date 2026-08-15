@@ -208,6 +208,7 @@ merge_session_db() {
 # === 从 .jsonl 文件补充 messages 表 ===
 # DevEnv 界面从 messages 表读取会话显示名（第一条用户消息）
 # 容器重建后 messages 表可能为空，需要从 .jsonl 文件补充
+# 同时用 TurnId 线性插值恢复会话时间戳（解决重建后时间全一样的问题）
 import_messages_from_jsonl() {
     [ -d "$LOCAL_DIR/sessions" ] || return 0
     [ -f "$LOCAL_DIR/memory.db" ] || return 0
@@ -288,6 +289,104 @@ if imported > 0:
 PYEOF
     local rc=$?
     [ $rc -eq 0 ] && log "JSONL_IMPORT: 从 .jsonl 补充 messages 表完成" || true
+
+    # 用 TurnId 线性插值恢复会话时间戳（解决重建后时间全一样的问题）
+    recover_session_timestamps
+
+    return 0
+}
+
+# === 用 TurnId 恢复会话时间戳 ===
+# 容器重建后所有会话的 start_timestamp 变成同一个时间
+# 用 .jsonl 文件中的 TurnId（全局递增）线性插值恢复合理的不同时间
+recover_session_timestamps() {
+    [ -d "$LOCAL_DIR/sessions" ] || return 0
+    [ -f "$LOCAL_DIR/memory.db" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+
+    python3 - "$LOCAL_DIR" << 'PYEOF' 2>/dev/null
+import json, os, sqlite3, glob, sys
+from datetime import datetime
+
+local_dir = sys.argv[1]
+sessions_dir = os.path.join(local_dir, "sessions")
+db_path = os.path.join(local_dir, "memory.db")
+
+# 1. 收集每个会话的 TurnId
+turn_ids = {}
+for f in glob.glob(os.path.join(sessions_dir, "*.jsonl")):
+    sid = os.path.basename(f).replace(".jsonl", "")
+    try:
+        with open(f, "r", encoding="utf-8", errors="replace") as fh:
+            first_line = fh.readline().strip()
+            if first_line:
+                d = json.loads(first_line)
+                turn_ids[sid] = d.get("TurnId", 0)
+    except:
+        pass
+
+# 2. 从 messages 表获取有真实 CreatedAt 的会话
+conn = sqlite3.connect(db_path)
+cur = conn.cursor()
+cur.execute("SELECT session_id, content_json FROM messages WHERE role='user'")
+real_times = {}
+for sid, cj in cur.fetchall():
+    if sid in real_times:
+        continue
+    try:
+        d = json.loads(cj)
+        created = d.get("CreatedAt", "")
+        if created:
+            dt = datetime.fromisoformat(created[:26] + "+08:00")
+            real_times[sid] = dt.timestamp()
+    except:
+        pass
+
+# 3. 找需要修复的会话
+cur.execute("SELECT session_id, start_timestamp FROM sessions")
+sessions = cur.fetchall()
+need_fix = []
+for sid, ts in sessions:
+    if sid in real_times or sid not in turn_ids:
+        continue
+    need_fix.append((sid, ts, turn_ids[sid]))
+
+if not need_fix:
+    conn.close()
+    exit()
+
+# 4. 用有真实时间的会话作为插值锚点
+real_with_turn = [(sid, real_times[sid], turn_ids[sid]) for sid in real_times if sid in turn_ids]
+if real_with_turn:
+    earliest = min(real_with_turn, key=lambda x: x[1])
+    latest = max(real_with_turn, key=lambda x: x[1])
+    t_min, turn_min = earliest[1], earliest[2]
+    t_max, turn_max = latest[1], latest[2]
+else:
+    # 没有锚点，用当前时间往前推 2 小时作为范围
+    now = datetime.now().timestamp()
+    t_min, t_max = now - 7200, now
+    turn_min = min(turn_ids.values())
+    turn_max = max(turn_ids.values())
+
+# 5. 线性插值并更新
+updated = 0
+for sid, old_ts, turn_id in need_fix:
+    if turn_max == turn_min:
+        new_ts = t_min
+    else:
+        ratio = (turn_id - turn_min) / (turn_max - turn_min)
+        new_ts = t_min + ratio * (t_max - t_min)
+    cur.execute("UPDATE sessions SET start_timestamp=? WHERE session_id=?", (new_ts, sid))
+    updated += 1
+
+conn.commit()
+conn.close()
+if updated > 0:
+    print(f"TS_RECOVER: 恢复了 {updated} 个会话的时间戳")
+PYEOF
+    local rc=$?
+    [ $rc -eq 0 ] && log "TS_RECOVER: 用 TurnId 恢复会话时间戳完成" || true
     return 0
 }
 
