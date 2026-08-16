@@ -427,23 +427,21 @@ DevEnv UI 的会话列表查询有硬编码的 `LIMIT 10`，这是平台层面�
 
 ### 解决方案
 
-在 `chat-backup.sh` 中新增 `prune_sessions()` 函数，当会话数超过 `MAX_SESSIONS`（默认10）时，
-自动删除消息最少的旧会话：
+默认**不自动删除**，只警告提示。需要用户手动确认后才删除：
 
 ```bash
-# 脚本顶部配置
-MAX_SESSIONS=10  # DevEnv UI 最多显示的会话数
-
-# 清理逻辑：按 message_count 升序 + start_timestamp 升序排序
-# 优先删除消息少且时间早的会话
-sqlite3 "$db" "SELECT session_id FROM sessions ORDER BY message_count ASC, start_timestamp ASC LIMIT $to_delete;"
-```
-
-在 `backup` 和 `restore` 时自动调用。也可手动执行：
-
-```bash
+# 手动执行（交互式确认）
 /root/chat-backup.sh prune
+# 会列出候选会话，显示标题/消息数/日期，要求 y/N 确认后才删除
+
+# backup/restore 时默认只警告（AUTO_PRUNE=false）
+# 如需开启自动删除，编辑脚本顶部：
+# AUTO_PRUNE=true
 ```
+
+`prune_sessions()` 函数支持两种模式：
+- **auto 模式**（backup/restore 调用）：`AUTO_PRUNE=false` 时只列出建议清理的会话但不删除；`true` 时自动删除
+- **interactive 模式**（手动 `prune` 命令）：列出候选会话，要求 `y/N` 确认后才删除
 
 ### 策略说明
 
@@ -452,7 +450,8 @@ prune 的删除策略是**保留对话最丰富、最近的会话**：
 2. 同等消息数按 `start_timestamp` 升序排序（时间早的先删）
 3. 只删除超出 `MAX_SESSIONS` 的部分
 
-> ⚠️ **重要**：prune 会永久删除会话数据（包括 .jsonl 文件和数据库记录）。
+> ⚠️ **重要**：默认 `AUTO_PRUNE=false`，不会自动删除任何会话。
+> 手动 `prune` 时会显示候选列表并要求确认，防止误删重要会话。
 > 被删除的会话在 GitHub 仓库的历史提交中仍可找回（git 版本控制）。
 
 ### 验证

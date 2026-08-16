@@ -20,7 +20,8 @@ BACKUP_INTERVAL=120  # 备份间隔（秒）
 GIT_TIMEOUT=30       # git 命令超时（秒）
 LOCK_DIR="/var/run/chat-backup.lock"
 STALE_LOCK_SEC=300   # 锁超过 300 秒视为过期（崩溃/OOM 恢复）
-MAX_SESSIONS=10      # DevEnv UI 最多显示的会话数（超过则自动清理消息少的旧会话）
+MAX_SESSIONS=10      # DevEnv UI 最多显示的会话数（超过则提示清理）
+AUTO_PRUNE=false     # 是否自动删除超限会话（false=只警告不删，true=自动删除消息少的旧会话）
 
 # 防止 git 等待输入
 export GIT_TERMINAL_PROMPT=0
@@ -435,8 +436,13 @@ fix_session_visibility() {
 
 # === 会话数限制管理 ===
 # DevEnv UI 最多显示 MAX_SESSIONS（默认10）个会话
-# 当总会话数超过限制时，自动删除消息最少的旧会话
+# 当总会话数超过限制时，提示用户清理
+#
+# 用法: prune_sessions [auto|interactive]
+#   auto        — 被 backup/restore 调用。AUTO_PRUNE=false 时只警告不删除；true 时自动删除
+#   interactive — 被 prune 命令调用。列出候选会话，交互式确认后才删除
 prune_sessions() {
+    local mode="${1:-auto}"
     local db="$LOCAL_DIR/memory.db"
     [ -f "$db" ] || return 0
     command -v sqlite3 >/dev/null 2>&1 || return 0
@@ -455,12 +461,62 @@ prune_sessions() {
     # 找出消息最少的旧会话（按 message_count 升序，再按 start_timestamp 升序）
     local candidates
     candidates=$(sqlite3 "$db" \
-        "SELECT session_id, message_count, title FROM sessions ORDER BY message_count ASC, start_timestamp ASC LIMIT $to_delete;" 2>/dev/null)
+        "SELECT session_id, message_count, title, start_timestamp FROM sessions ORDER BY message_count ASC, start_timestamp ASC LIMIT $to_delete;" 2>/dev/null)
 
     [ -z "$candidates" ] && return 0
 
+    # auto 模式：检查 AUTO_PRUNE 开关
+    if [ "$mode" = "auto" ] && [ "$AUTO_PRUNE" = "false" ]; then
+        log "PRUNE: AUTO_PRUNE=false，仅警告不删除。建议手动执行: $0 prune"
+        echo ""
+        echo "⚠️  会话数 $total 超过 DevEnv UI 上限 $MAX_SESSIONS，以下 $to_delete 个会话建议清理："
+        echo ""
+        printf "%-4s  %-17s %5s  %s\n" "序号" "日期" "消息数" "标题"
+        echo "------------------------------------------------------------"
+        local idx=1
+        while IFS='|' read -r sid cnt title ts; do
+            [ -z "$sid" ] && continue
+            local time_str
+            time_str=$(date -d "@${ts:-0}" '+%m-%d %H:%M' 2>/dev/null || echo "????")
+            local disp_title="${title:-（无标题）}"
+            printf "%-4s  %-17s %5s  %s\n" "$idx" "$time_str" "$cnt" "${disp_title:0:50}"
+            idx=$((idx + 1))
+        done <<< "$candidates"
+        echo ""
+        echo "💡 执行以下命令手动清理（会再次确认后才删除）："
+        echo "   $0 prune"
+        echo "   或设置自动删除：编辑脚本顶部 AUTO_PRUNE=true"
+        return 0
+    fi
+
+    # interactive 模式 或 AUTO_PRUNE=true：显示候选列表并确认
+    if [ "$mode" = "interactive" ]; then
+        echo ""
+        echo "以下 $to_delete 个会话建议清理（消息最少且最早的）："
+        echo ""
+        printf "%-4s  %-17s %5s  %s\n" "序号" "日期" "消息数" "标题"
+        echo "------------------------------------------------------------"
+        local idx=1
+        local sid_list=""
+        while IFS='|' read -r sid cnt title ts; do
+            [ -z "$sid" ] && continue
+            local time_str
+            time_str=$(date -d "@${ts:-0}" '+%m-%d %H:%M' 2>/dev/null || echo "????")
+            local disp_title="${title:-（无标题）}"
+            printf "%-4s  %-17s %5s  %s\n" "$idx" "$time_str" "$cnt" "${disp_title:0:50}"
+            sid_list="$sid_list $sid"
+            idx=$((idx + 1))
+        done <<< "$candidates"
+        echo ""
+        echo "⚠️  删除后不可恢复（但 GitHub 历史提交中仍可找回）"
+        echo -n "确认删除这 $to_delete 个会话？(y/N): "
+        read -r confirm
+        [[ "$confirm" != [yY] ]] && { echo "取消"; return 0; }
+    fi
+
+    # 执行删除
     local deleted=0
-    while IFS='|' read -r sid cnt title; do
+    while IFS='|' read -r sid cnt title ts; do
         [ -z "$sid" ] && continue
         # 从数据库删除
         sqlite3 "$db" \
@@ -476,7 +532,7 @@ prune_sessions() {
         local remaining
         remaining=$(sqlite3 "$db" "SELECT COUNT(*) FROM sessions;" 2>/dev/null || echo "?")
         log "PRUNE: 清理完成，删除 $deleted 个，剩余 $remaining 个"
-        echo "PRUNE: 清理了 $deleted 个低质量会话，剩余 $remaining 个"
+        echo "✅ PRUNE: 清理了 $deleted 个会话，剩余 $remaining 个"
     fi
 }
 
@@ -532,7 +588,7 @@ sync_from_repo() {
     fix_session_visibility
 
     # 清理多余会话（DevEnv UI 最多显示 MAX_SESSIONS 个）
-    prune_sessions
+    prune_sessions auto
 }
 
 # === 备份 ===
@@ -554,7 +610,7 @@ do_backup() {
 
     # 修复会话可见性 + 清理多余会话（在同步前处理）
     fix_session_visibility
-    prune_sessions
+    prune_sessions auto
 
     # 同步本地数据到仓库
     sync_to_repo
@@ -932,7 +988,7 @@ case "${1:-}" in
     auto-approve) auto_approve ;;
     delete)       do_delete "$@" ;;
     fix-visibility) fix_session_visibility ;;
-    prune)        prune_sessions ;;
+    prune)        prune_sessions interactive ;;
     *) echo "用法: $0 {backup|restore|setup|daemon|status|auto-approve|delete|fix-visibility|prune}"
        echo ""
        echo "命令说明:"
@@ -943,7 +999,7 @@ case "${1:-}" in
        echo "  status          查看备份状态"
        echo "  auto-approve    设置自动批准（免确认）"
        echo "  fix-visibility  修复会话可见性（清除 metadata.source=\"acp\"）"
-       echo "  prune           清理多余会话（保留最近 $MAX_SESSIONS 个）"
+       echo "  prune           清理多余会话（交互式确认，保留最近 $MAX_SESSIONS 个）"
        echo "  delete          交互式删除会话"
        echo ""
        echo "删除会话:"

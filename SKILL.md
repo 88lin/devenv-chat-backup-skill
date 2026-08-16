@@ -123,7 +123,7 @@ chmod +x /root/chat-backup.sh
 | `chat-backup.sh status` | 查看备份状态 |
 | `chat-backup.sh auto-approve` | 开启自动批准（免确认，修改 settings.json） |
 | `chat-backup.sh fix-visibility` | 🆕 修复会话可见性（清除 metadata.source="acp"） |
-| `chat-backup.sh prune` | 🆕 清理多余会话（保留消息最多的最近 N 个，默认 N=10） |
+| `chat-backup.sh prune` | 🆕 清理多余会话（交互式确认，保留消息最多的最近 N 个，默认 N=10） |
 | `chat-backup.sh delete` | 交互式删除会话（支持关键词/日期/空会话筛选） |
 
 ### 防断开保活
@@ -190,16 +190,18 @@ DevEnv UI 会过滤掉这些会话，只显示 `metadata={}` 的会话。导致�
 
 **根因**：DevEnv UI 的会话列表有硬编码的 `LIMIT 10`，这是平台限制，无法通过配置修改。
 
-**解决方案**：`prune_sessions()` 函数在会话数超过 `MAX_SESSIONS`（默认10）时，自动删除消息最少的旧会话：
+**解决方案**：`prune_sessions()` 函数在会话数超过 `MAX_SESSIONS`（默认10）时，提示用户清理：
 ```bash
-# 手动执行
+# 手动执行（会列出候选会话并要求确认后才删除）
 /root/chat-backup.sh prune
 
-# 或在 backup/restore 时自动执行
-# 修改脚本顶部的 MAX_SESSIONS=10 可调整限制
+# backup/restore 时默认只警告不自动删除（AUTO_PRUNE=false）
+# 如需自动删除，编辑脚本顶部设置 AUTO_PRUNE=true
 ```
 
-> 💡 **策略**：prune 按 `message_count` 升序 + `start_timestamp` 升序排序，优先删除消息少且时间早的会话。
+> 💡 **安全策略**：默认 `AUTO_PRUNE=false`，backup/restore 时只列出建议清理的会话但**不自动删除**。
+> 手动执行 `prune` 时会显示候选列表并要求 `y/N` 确认后才删除。
+> prune 按 `message_count` 升序 + `start_timestamp` 升序排序，优先删除消息少且时间早的会话。
 > 这样保留的是对话最丰富、最近的会话。
 
 ## 防断开保活（tmux 方案）

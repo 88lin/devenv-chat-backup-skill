@@ -55,11 +55,12 @@ DevEnv UI 有两个隐藏限制，本 skill 已自动处理：
 ### 2. UI 最多显示10个会话
 
 DevEnv UI 硬编码 `LIMIT 10`，超过10个会话时较早/消息较少的不会显示。
-`prune` 命令自动清理消息最少的旧会话，保留对话最丰富的最近10个：
+`prune` 命令列出候选会话并要求确认后才删除，**默认不自动删除**：
 
 ```bash
-/root/chat-backup.sh prune  # 手动清理
-# backup 和 restore 时也会自动执行
+/root/chat-backup.sh prune  # 手动清理（交互式确认）
+# backup/restore 时默认只警告不删除（AUTO_PRUNE=false）
+# 如需自动删除：编辑脚本顶部 AUTO_PRUNE=true
 # 修改脚本顶部 MAX_SESSIONS=10 可调整限制
 ```
 
