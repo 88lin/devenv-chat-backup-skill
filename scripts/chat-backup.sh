@@ -20,6 +20,7 @@ BACKUP_INTERVAL=120  # 备份间隔（秒）
 GIT_TIMEOUT=30       # git 命令超时（秒）
 LOCK_DIR="/var/run/chat-backup.lock"
 STALE_LOCK_SEC=300   # 锁超过 300 秒视为过期（崩溃/OOM 恢复）
+MAX_SESSIONS=10      # DevEnv UI 最多显示的会话数（超过则自动清理消息少的旧会话）
 
 # 防止 git 等待输入
 export GIT_TERMINAL_PROMPT=0
@@ -391,6 +392,94 @@ PYEOF
     return 0
 }
 
+# === 修复会话可见性 ===
+# DevEnv UI 只显示 metadata 为空对象 {} 的会话
+# 通过 ACP 创建的会话 metadata 含 {"source":"acp",...}，会被 UI 过滤掉
+# 本函数清除 metadata 中的 source 字段，使会话在 UI 中可见
+fix_session_visibility() {
+    local db="$LOCAL_DIR/memory.db"
+    [ -f "$db" ] || return 0
+    command -v sqlite3 >/dev/null 2>&1 || return 0
+
+    # 检查 sessions 表是否有 metadata 列
+    local has_metadata
+    has_metadata=$(sqlite3 "$db" "PRAGMA table_info(sessions);" 2>/dev/null | grep -c "metadata")
+    if [ "$has_metadata" -eq 0 ]; then
+        log "FIX_VIS: sessions 表无 metadata 列，跳过"
+        return 0
+    fi
+
+    # 统计有 source=acp 的会话数
+    local hidden_count
+    hidden_count=$(sqlite3 "$db" \
+        "SELECT COUNT(*) FROM sessions WHERE metadata LIKE '%\"source\"%' AND metadata != '{}';" 2>/dev/null || echo 0)
+
+    if [ "$hidden_count" -eq 0 ]; then
+        log "FIX_VIS: 无隐藏会话，跳过"
+        return 0
+    fi
+
+    # 清除 metadata 中的 source 字段（设为空对象 {}）
+    sqlite3 "$db" \
+        "UPDATE sessions SET metadata='{}' WHERE metadata LIKE '%\"source\"%' AND metadata != '{}';" 2>/dev/null
+
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        log "FIX_VIS: 修复了 $hidden_count 个会话的可见性（清除 metadata.source）"
+        echo "FIX_VIS: 修复了 $hidden_count 个会话的可见性"
+    else
+        log "FIX_VIS: 修复失败 (exit=$rc)"
+    fi
+    return $rc
+}
+
+# === 会话数限制管理 ===
+# DevEnv UI 最多显示 MAX_SESSIONS（默认10）个会话
+# 当总会话数超过限制时，自动删除消息最少的旧会话
+prune_sessions() {
+    local db="$LOCAL_DIR/memory.db"
+    [ -f "$db" ] || return 0
+    command -v sqlite3 >/dev/null 2>&1 || return 0
+
+    local total
+    total=$(sqlite3 "$db" "SELECT COUNT(*) FROM sessions;" 2>/dev/null || echo 0)
+
+    if [ "$total" -le "$MAX_SESSIONS" ]; then
+        log "PRUNE: 会话数 $total ≤ $MAX_SESSIONS，无需清理"
+        return 0
+    fi
+
+    local to_delete=$((total - MAX_SESSIONS))
+    log "PRUNE: 会话数 $total > $MAX_SESSIONS，需要清理 $to_delete 个"
+
+    # 找出消息最少的旧会话（按 message_count 升序，再按 start_timestamp 升序）
+    local candidates
+    candidates=$(sqlite3 "$db" \
+        "SELECT session_id, message_count, title FROM sessions ORDER BY message_count ASC, start_timestamp ASC LIMIT $to_delete;" 2>/dev/null)
+
+    [ -z "$candidates" ] && return 0
+
+    local deleted=0
+    while IFS='|' read -r sid cnt title; do
+        [ -z "$sid" ] && continue
+        # 从数据库删除
+        sqlite3 "$db" \
+            "DELETE FROM messages WHERE session_id='$sid'; DELETE FROM sessions WHERE session_id='$sid';" 2>/dev/null
+        # 删除 jsonl 文件
+        rm -f "$LOCAL_DIR/sessions/${sid}.jsonl" "$LOCAL_DIR/sessions/${sid}.metadata.json"
+        rm -f "$REPO_DIR/hwcloud-data/sessions/${sid}.jsonl" "$REPO_DIR/hwcloud-data/sessions/${sid}.metadata.json"
+        deleted=$((deleted + 1))
+        log "PRUNE: 删除会话 $sid (消息数=$cnt, 标题=$title)"
+    done <<< "$candidates"
+
+    if [ $deleted -gt 0 ]; then
+        local remaining
+        remaining=$(sqlite3 "$db" "SELECT COUNT(*) FROM sessions;" 2>/dev/null || echo "?")
+        log "PRUNE: 清理完成，删除 $deleted 个，剩余 $remaining 个"
+        echo "PRUNE: 清理了 $deleted 个低质量会话，剩余 $remaining 个"
+    fi
+}
+
 # === 从仓库目录恢复到本地 ===
 sync_from_repo() {
     [ ! -d "$REPO_DIR/hwcloud-data" ] && return 0
@@ -438,6 +527,12 @@ sync_from_repo() {
 
     # 从 .jsonl 补充 messages 表（DevEnv 界面靠 messages 表显示会话标题）
     import_messages_from_jsonl
+
+    # 修复会话可见性（清除 metadata.source="acp"）
+    fix_session_visibility
+
+    # 清理多余会话（DevEnv UI 最多显示 MAX_SESSIONS 个）
+    prune_sessions
 }
 
 # === 备份 ===
@@ -456,6 +551,10 @@ do_backup() {
 
     # 拉取最新变更（带超时）
     timeout $GIT_TIMEOUT git pull --rebase origin main 2>>"$BACKUP_LOG" >/dev/null
+
+    # 修复会话可见性 + 清理多余会话（在同步前处理）
+    fix_session_visibility
+    prune_sessions
 
     # 同步本地数据到仓库
     sync_to_repo
@@ -832,7 +931,20 @@ case "${1:-}" in
     status)       do_status ;;
     auto-approve) auto_approve ;;
     delete)       do_delete "$@" ;;
-    *) echo "用法: $0 {backup|restore|setup|daemon|status|auto-approve|delete}"
+    fix-visibility) fix_session_visibility ;;
+    prune)        prune_sessions ;;
+    *) echo "用法: $0 {backup|restore|setup|daemon|status|auto-approve|delete|fix-visibility|prune}"
+       echo ""
+       echo "命令说明:"
+       echo "  backup          备份当前数据到 GitHub"
+       echo "  restore         从 GitHub 恢复最新数据"
+       echo "  setup           设置后台定时备份 + .bashrc 自动启动"
+       echo "  daemon          启动后台备份守护进程"
+       echo "  status          查看备份状态"
+       echo "  auto-approve    设置自动批准（免确认）"
+       echo "  fix-visibility  修复会话可见性（清除 metadata.source=\"acp\"）"
+       echo "  prune           清理多余会话（保留最近 $MAX_SESSIONS 个）"
+       echo "  delete          交互式删除会话"
        echo ""
        echo "删除会话:"
        echo "  $0 delete                    # 交互式搜索"

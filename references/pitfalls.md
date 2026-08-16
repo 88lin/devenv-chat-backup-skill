@@ -370,6 +370,105 @@ sqlite3 /root/.ai/memory.db "SELECT COUNT(*) FROM messages;"
 
 ---
 
+## 坑 17：metadata.source="acp" 导致会话在 DevEnv UI 中不可见
+
+### 现象
+
+备份了14个会话到 GitHub，restore 后数据库中有14条 session 记录，但 DevEnv UI 只显示10个会话。
+检查数据库发现4个会话的 `metadata` 字段为 `{"source":"acp",...}`，而可见的10个会话 `metadata` 为 `{}`。
+
+### 根因
+
+通过 ACP（Agent Communication Protocol）创建的会话，`metadata` 字段会自动写入 `{"source":"acp",...}`。
+DevEnv UI 的会话列表查询会**隐式过滤**掉 `metadata` 含 `source` 字段的记录，只显示 `metadata={}` 的会话。
+
+这是一个 UI 层面的过滤行为，不是数据库问题——数据都在，只是 UI 不显示。
+
+### 解决方案
+
+在 `chat-backup.sh` 中新增 `fix_session_visibility()` 函数：
+
+```bash
+# 清除 metadata 中的 source 字段，使会话在 UI 中可见
+sqlite3 "$db" "UPDATE sessions SET metadata='{}' WHERE metadata LIKE '%\"source\"%' AND metadata != '{}';"
+```
+
+在 `backup` 和 `restore` 时自动调用。也可手动执行：
+
+```bash
+/root/chat-backup.sh fix-visibility
+```
+
+### 验证
+
+```bash
+# 检查是否有隐藏会话
+sqlite3 /root/.huawei/hwcloud/memory.db \
+  "SELECT COUNT(*) FROM sessions WHERE metadata LIKE '%\"source\"%' AND metadata != '{}';"
+# 应返回 0
+
+# 查看总会话数
+sqlite3 /root/.huawei/hwcloud/memory.db "SELECT COUNT(*) FROM sessions;"
+```
+
+---
+
+## 坑 18：DevEnv UI 最多只显示10个会话
+
+### 现象
+
+即使所有会话的 `metadata` 都已修复为 `{}`，DevEnv UI 仍然最多只显示10个会话。
+数据库中有超过10个会话记录，但 UI 列表只展示前10个。
+
+### 根因
+
+DevEnv UI 的会话列表查询有硬编码的 `LIMIT 10`，这是平台层面的限制，无法通过用户配置修改。
+这不是 bug，是 DevEnv 产品设计上的约束。
+
+### 解决方案
+
+在 `chat-backup.sh` 中新增 `prune_sessions()` 函数，当会话数超过 `MAX_SESSIONS`（默认10）时，
+自动删除消息最少的旧会话：
+
+```bash
+# 脚本顶部配置
+MAX_SESSIONS=10  # DevEnv UI 最多显示的会话数
+
+# 清理逻辑：按 message_count 升序 + start_timestamp 升序排序
+# 优先删除消息少且时间早的会话
+sqlite3 "$db" "SELECT session_id FROM sessions ORDER BY message_count ASC, start_timestamp ASC LIMIT $to_delete;"
+```
+
+在 `backup` 和 `restore` 时自动调用。也可手动执行：
+
+```bash
+/root/chat-backup.sh prune
+```
+
+### 策略说明
+
+prune 的删除策略是**保留对话最丰富、最近的会话**：
+1. 按 `message_count` 升序排序（消息少的先删）
+2. 同等消息数按 `start_timestamp` 升序排序（时间早的先删）
+3. 只删除超出 `MAX_SESSIONS` 的部分
+
+> ⚠️ **重要**：prune 会永久删除会话数据（包括 .jsonl 文件和数据库记录）。
+> 被删除的会话在 GitHub 仓库的历史提交中仍可找回（git 版本控制）。
+
+### 验证
+
+```bash
+# 查看当前会话数
+sqlite3 /root/.huawei/hwcloud/memory.db "SELECT COUNT(*) FROM sessions;"
+# 应 ≤ 10
+
+# 查看会话列表（按消息数降序）
+sqlite3 /root/.huawei/hwcloud/memory.db \
+  "SELECT message_count, substr(title,1,40) FROM sessions ORDER BY message_count DESC;"
+```
+
+---
+
 ## 经验总结
 
 1. **容器环境 ≠ 完整 Linux**：很多常用工具（rsync、crontab、curl 某些域名）可能不可用，要有替代方案
@@ -378,3 +477,5 @@ sqlite3 /root/.ai/memory.db "SELECT COUNT(*) FROM messages;"
 4. **守护进程要自防御**：CWD 丢失、TTY 缺失、进程堆积等问题都要预防
 5. **恢复命令要外部保存**：恢复命令本身也在 overlay 层，容器重建后一起丢失，必须保存到外部（如 GitHub 仓库 README）
 6. **界面显示名来源**：DevEnv 界面从 `messages` 表第一条用户消息提取显示名，不是 `sessions.title`。restore 必须同时恢复 `sessions` 和 `messages` 表
+7. **metadata.source 过滤**：DevEnv UI 隐式过滤 `metadata` 含 `source` 字段的会话，ACP 创建的会话需清除 metadata 才能可见
+8. **UI 会话数上限**：DevEnv UI 硬编码 `LIMIT 10`，超过10个会话需自动 prune，优先保留消息多且最近的

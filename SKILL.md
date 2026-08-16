@@ -117,11 +117,14 @@ chmod +x /root/chat-backup.sh
 | 命令 | 说明 |
 |------|------|
 | `chat-backup.sh setup` | 首次设置：自动批准 + 备份 + 启动守护进程 + 配置 .bashrc（仅 daemon，不自动 restore） |
-| `chat-backup.sh backup` | 立即备份当前数据到 Git |
-| `chat-backup.sh restore` | 从 Git 恢复最新数据（安全合并数据库 + 从 .jsonl 补充 messages 表） |
+| `chat-backup.sh backup` | 立即备份当前数据到 Git（自动修复可见性 + 清理多余会话） |
+| `chat-backup.sh restore` | 从 Git 恢复最新数据（安全合并 + 补充 messages + 修复可见性 + 清理多余会话） |
 | `chat-backup.sh daemon` | 启动后台守护进程（每120秒备份） |
 | `chat-backup.sh status` | 查看备份状态 |
 | `chat-backup.sh auto-approve` | 开启自动批准（免确认，修改 settings.json） |
+| `chat-backup.sh fix-visibility` | 🆕 修复会话可见性（清除 metadata.source="acp"） |
+| `chat-backup.sh prune` | 🆕 清理多余会话（保留消息最多的最近 N 个，默认 N=10） |
+| `chat-backup.sh delete` | 交互式删除会话（支持关键词/日期/空会话筛选） |
 
 ### 防断开保活
 
@@ -162,6 +165,42 @@ chmod +x /root/chat-backup.sh
 > ⚠️ **messages 表是关键**：DevEnv 界面从 `messages` 表（不是 `sessions.title`）读取会话显示名。
 > restore 时会自动从 `.jsonl` 文件补充 `messages` 表（`import_messages_from_jsonl`），
 > 确保界面显示中文标题而非 session ID。
+
+## 会话可见性管理
+
+### 问题1：metadata.source="acp" 导致会话不可见
+
+**现象**：通过 ACP（Agent Communication Protocol）创建的会话，其 `metadata` 字段包含 `{"source":"acp",...}`。
+DevEnv UI 会过滤掉这些会话，只显示 `metadata={}` 的会话。导致备份了14个会话但UI只显示10个。
+
+**根因**：DevEnv UI 的会话列表查询隐式过滤了 `metadata` 含 `source` 字段的记录。
+
+**解决方案**：`fix_session_visibility()` 函数自动清除 `metadata` 中的 `source` 字段：
+```bash
+# 手动执行
+/root/chat-backup.sh fix-visibility
+
+# 或在 backup/restore 时自动执行
+```
+
+### 问题2：DevEnv UI 最多显示10个会话
+
+**现象**：即使所有会话的 metadata 都正确，DevEnv UI 也最多只显示10个会话。
+超过10个时，较早或消息较少的会话不会出现在列表中。
+
+**根因**：DevEnv UI 的会话列表有硬编码的 `LIMIT 10`，这是平台限制，无法通过配置修改。
+
+**解决方案**：`prune_sessions()` 函数在会话数超过 `MAX_SESSIONS`（默认10）时，自动删除消息最少的旧会话：
+```bash
+# 手动执行
+/root/chat-backup.sh prune
+
+# 或在 backup/restore 时自动执行
+# 修改脚本顶部的 MAX_SESSIONS=10 可调整限制
+```
+
+> 💡 **策略**：prune 按 `message_count` 升序 + `start_timestamp` 升序排序，优先删除消息少且时间早的会话。
+> 这样保留的是对话最丰富、最近的会话。
 
 ## 防断开保活（tmux 方案）
 
@@ -228,6 +267,8 @@ ggit push origin main
 10. **restore 跳过数据库导致标题丢失** → 改用 SQLite ATTACH 安全合并，不再跳过（坑 15）
 11. **sessions.title 有标题但界面仍显示 ID** → messages 表为空，从 .jsonl 补充（坑 16）
 12. **exec tmux attach 断开连接** → 改为提示，不替换 shell 进程（坑 12）
+13. **metadata.source="acp" 导致会话不可见** → 清除 metadata 为 `{}`（坑 17）
+14. **DevEnv UI 最多显示10个会话** → 自动 prune 消息少的旧会话（坑 18）
 
 ## References
 
