@@ -40,9 +40,14 @@ ensure_cf_tunnel() {
     fi
     log "CF_TUNNEL: not running, restarting..."
     if command -v cloudflared >/dev/null 2>&1 && [ -f /tmp/cf_tunnel_token.txt ]; then
-        nohup cloudflared tunnel --url http://localhost:9997 run glm-proxy > /tmp/cloudflared.log 2>&1 &
-        echo $! > "$pid_file"
-        log "CF_TUNNEL: restarted PID $!"
+        local token; token=$(cat /tmp/cf_tunnel_token.txt 2>/dev/null)
+        if [ -n "$token" ]; then
+            nohup cloudflared tunnel --no-autoupdate run --token "$token" > /tmp/cloudflared.log 2>&1 &
+            echo $! > "$pid_file"
+            log "CF_TUNNEL: restarted PID $!"
+        else
+            log "CF_TUNNEL: token empty, skip"
+        fi
     else
         log "CF_TUNNEL: cloudflared or token not found, skip"
     fi

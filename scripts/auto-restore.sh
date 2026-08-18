@@ -53,17 +53,22 @@ start_cf_tunnel() {
         return 0
     fi
     
-    if command -v cloudflared >/dev/null 2>&1; then
-        nohup cloudflared tunnel --url http://localhost:9997 run glm-proxy > /tmp/cloudflared.log 2>&1 &
-        echo $! > "$pid_file"
-        sleep 2
-        if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-            log "STEP 3: Started (PID $(cat "$pid_file"))"
+    if command -v cloudflared >/dev/null 2>&1 && [ -f /tmp/cf_tunnel_token.txt ]; then
+        local token; token=$(cat /tmp/cf_tunnel_token.txt 2>/dev/null)
+        if [ -n "$token" ]; then
+            nohup cloudflared tunnel --no-autoupdate run --token "$token" > /tmp/cloudflared.log 2>&1 &
+            echo $! > "$pid_file"
+            sleep 2
+            if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+                log "STEP 3: Started (PID $(cat "$pid_file"))"
+            else
+                log "STEP 3: Failed to start"
+            fi
         else
-            log "STEP 3: Failed to start"
+            log "STEP 3: Token empty, skip"
         fi
     else
-        log "STEP 3: cloudflared not found, skip"
+        log "STEP 3: cloudflared or token not found, skip"
     fi
 }
 

@@ -1,6 +1,7 @@
 #!/bin/bash
 # chat-backup.sh — AI Shell 聊天历史 + GLM Proxy 自动备份/恢复脚本
 REPO_URL="https://github.com/88lin/ai-shell-backup.git"
+REPO_MIRROR="https://ghfast.top/${REPO_URL}"
 REPO_DIR="/tmp/ai-shell-backup"
 LOCAL_DIR="/root/.huawei/hwcloud"
 SCRIPT_PATH="/root/chat-backup.sh"
@@ -179,8 +180,9 @@ fix_session_visibility() {
 do_backup() {
     acquire_lock || return 0; log "BACKUP: start"
     if [ ! -d "$REPO_DIR/.git" ]; then
-        rm -rf "$REPO_DIR"; timeout "$GIT_TIMEOUT" git clone --depth 1 "$REPO_URL" "$REPO_DIR" 2>/dev/null
+        rm -rf "$REPO_DIR"; timeout "$GIT_TIMEOUT" git clone --depth 1 "$REPO_MIRROR" "$REPO_DIR" 2>/dev/null || timeout "$GIT_TIMEOUT" git clone --depth 1 "$REPO_URL" "$REPO_DIR" 2>/dev/null
         if [ ! -d "$REPO_DIR/.git" ]; then mkdir -p "$REPO_DIR"; git init "$REPO_DIR" 2>/dev/null; cd "$REPO_DIR" && git remote add origin "$REPO_URL" 2>/dev/null; fi
+    cd "$REPO_DIR" && git remote set-url origin "$REPO_URL" 2>/dev/null
     fi
     cd "$REPO_DIR" || { release_lock; return 1; }
     timeout "$GIT_TIMEOUT" git pull --depth 1 origin main 2>/dev/null || timeout "$GIT_TIMEOUT" git pull --depth 1 origin master 2>/dev/null || true
@@ -195,7 +197,7 @@ do_backup() {
 
 do_restore() {
     log "RESTORE: start"
-    if [ ! -d "$REPO_DIR/.git" ]; then rm -rf "$REPO_DIR"; timeout "$GIT_TIMEOUT" git clone --depth 1 "$REPO_URL" "$REPO_DIR" 2>/dev/null
+    if [ ! -d "$REPO_DIR/.git" ]; then rm -rf "$REPO_DIR"; timeout "$GIT_TIMEOUT" git clone --depth 1 "$REPO_MIRROR" "$REPO_DIR" 2>/dev/null || timeout "$GIT_TIMEOUT" git clone --depth 1 "$REPO_URL" "$REPO_DIR" 2>/dev/null
     else cd "$REPO_DIR"; timeout "$GIT_TIMEOUT" git pull --depth 1 origin main 2>/dev/null || timeout "$GIT_TIMEOUT" git pull --depth 1 origin master 2>/dev/null || true; fi
     [ -d "$REPO_DIR/hwcloud-data" ] || { log "RESTORE: no data"; return 1; }
     mkdir -p "$LOCAL_DIR/sessions"
@@ -233,10 +235,15 @@ start_cf_tunnel() {
     fi
     [ -f /tmp/cf_tunnel_token.txt ] || { log "CF_TUNNEL: no token"; return 0; }
     command -v cloudflared >/dev/null 2>&1 || { log "CF_TUNNEL: cloudflared not found"; return 0; }
-    nohup cloudflared tunnel --url http://localhost:"$GLM_PROXY_PORT" run glm-proxy > /tmp/cloudflared.log 2>&1 &
+    local token; token=$(cat /tmp/cf_tunnel_token.txt 2>/dev/null)
+    [ -z "$token" ] && { log "CF_TUNNEL: token empty"; return 0; }
+    nohup cloudflared tunnel --no-autoupdate run --token "$token" > /tmp/cloudflared.log 2>&1 &
     echo $! > "$CF_TUNNEL_PID_FILE"
-    sleep 2; log "CF_TUNNEL: started PID $(cat "$CF_TUNNEL_PID_FILE")"
+    sleep 2
+    if kill -0 "$(cat "$CF_TUNNEL_PID_FILE")" 2>/dev/null; then log "CF_TUNNEL: started PID $(cat "$CF_TUNNEL_PID_FILE")"
+    else log "CF_TUNNEL: failed to start"; return 1; fi
 }
+
 
 do_full_restore() {
     do_restore

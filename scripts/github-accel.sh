@@ -9,6 +9,7 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$GHACCEL_LOG" 2>/dev/null; 
 
 # GitHub 镜像源列表
 MIRRORS=(
+    "https://ghfast.top/"
     "https://ghproxy.com/"
     "https://gh-proxy.com/"
     "https://ghps.cc/"

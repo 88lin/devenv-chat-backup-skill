@@ -31,22 +31,27 @@ DevEnv 容器**销毁重建**时，overlay 层数据全部清除，包括：
 打开你的 GitHub 备份仓库（如 `ai-shell-backup`），执行以下 3 行命令：
 
 ```bash
-# 第1行：克隆备份仓库（把 YOUR_TOKEN 换成你的 GitHub Token）
-git clone https://YOUR_TOKEN@github.com/YOUR_USER/ai-shell-backup.git /tmp/recover
+# 第1行：克隆备份仓库（使用镜像加速，把 YOUR_TOKEN 换成你的 GitHub Token）
+git clone https://ghfast.top/https://YOUR_TOKEN@github.com/YOUR_USER/ai-shell-backup.git /tmp/recover
 
-# 第2行：复制脚本到 /root/
+# 第2行：复制脚本和配置到 /root/
 cp /tmp/recover/scripts/*.sh /root/ && chmod +x /root/*.sh
+cp -rf /tmp/recover/scripts/glm-proxy /root/glm-proxy 2>/dev/null
+cp -f /tmp/recover/tmp-data/*.txt /tmp/ 2>/dev/null
 
 # 第3行：一键恢复全部服务
 bash /root/auto-restore.sh
 ```
 
+> **镜像不可用？** 去掉 `https://ghfast.top/` 前缀直接克隆即可。
+
 auto-restore.sh 会依次恢复：
-1. ✅ 聊天历史（sessions、memory.db、settings.json）
+1. ✅ 聊天历史（sessions、memory.db、settings.json、SOUL.md）
 2. ✅ GLM Proxy 服务（脚本 + 密钥 + 启动）
-3. ✅ 保活守护进程
-4. ✅ 备份守护进程（每120秒自动备份）
-5. ✅ .bashrc 自动恢复配置（下次重启就全自动了）
+3. ✅ Cloudflare Tunnel（基于 token 自动连接）
+4. ✅ 保活守护进程（每 60 秒检查）
+5. ✅ 备份守护进程（每 120 秒自动备份）
+6. ✅ .bashrc 自动恢复配置（下次重启就全自动了）
 
 ---
 
@@ -63,8 +68,8 @@ auto-restore.sh 会依次恢复：
 git config --global credential.helper store
 echo "https://YOUR_TOKEN@github.com" > ~/.git-credentials
 
-# 克隆本 skill 仓库
-git clone https://github.com/88lin/devenv-chat-backup-skill.git /tmp/skill
+# 克隆本 skill 仓库（使用镜像加速）
+git clone https://ghfast.top/https://github.com/88lin/devenv-chat-backup-skill.git /tmp/skill
 
 # 复制脚本到 /root/
 cp /tmp/skill/scripts/*.sh /root/
@@ -92,10 +97,10 @@ chmod +x /root/*.sh
 
 | 脚本 | 行数 | 说明 |
 |------|------|------|
-| `scripts/chat-backup.sh` | 284 | 聊天数据 + GLM Proxy 备份/恢复核心 |
-| `scripts/keepalive.sh` | 85 | 容器保活 + 进程守护 |
-| `scripts/github-accel.sh` | 152 | GitHub 加速：镜像回退 + 重试 |
-| `scripts/auto-restore.sh` | 132 | 容器重启一键恢复全部服务 |
+| `scripts/chat-backup.sh` | 290 | 聊天数据 + GLM Proxy 备份/恢复核心 |
+| `scripts/keepalive.sh` | 92 | 容器保活 + 进程守护 |
+| `scripts/github-accel.sh` | 153 | GitHub 加速：镜像回退 + 重试 |
+| `scripts/auto-restore.sh` | 140 | 容器重启一键恢复全部服务 |
 
 ## 备份内容
 
@@ -106,7 +111,7 @@ chmod +x /root/*.sh
 | `settings.json` | 用户设置 |
 | `SOUL.md` | Agent 人格配置 |
 | `scripts/glm-proxy/` | GLM Proxy 服务脚本 |
-| `tmp-data/*.txt` | GLM Proxy 密钥/Token |
+| `tmp-data/*.txt` | GLM Proxy 密钥/Cloudflare Tunnel Token |
 
 ## 常用命令
 
