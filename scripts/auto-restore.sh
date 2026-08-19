@@ -40,7 +40,7 @@ start_glm_proxy() {
         # Auto-install missing Python dependencies
         if ! python3 -c "import httpx" 2>/dev/null; then
             log "STEP 2: Installing httpx..."
-            pip3 install httpx -q 2>>/tmp/glm_proxy.log || log "STEP 2: httpx install failed"
+            pip3 install httpx fastapi uvicorn -q 2>>/tmp/glm_proxy.log || log "STEP 2: deps install failed"
         fi
         cd /root/glm-proxy
         nohup python3 glm_proxy.py --port 9997 > /tmp/glm_proxy.log 2>&1 &
