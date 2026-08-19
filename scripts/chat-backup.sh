@@ -28,7 +28,14 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 # Inject token into a GitHub URL for private repo auth.
 auth_url() {
     local url="$1"
-    if [ -n "$GITHUB_TOKEN" ] && echo "$url" | grep -q 'https://github.com'; then
+    if [ -z "$GITHUB_TOKEN" ]; then
+        echo "$url"
+    elif echo "$url" | grep -q 'ghfast.top'; then
+        # Mirror: use username:token format (x-access-token returns 403 on mirror)
+        local user; user=$(echo "$url" | sed -n 's|.*/github.com/\([^/]*\)/.*|\1|p')
+        echo "$url" | sed "s|https://ghfast.top/|https://${user}:${GITHUB_TOKEN}@ghfast.top/|"
+    elif echo "$url" | grep -q 'https://github.com'; then
+        # Direct: use x-access-token format
         echo "$url" | sed "s|https://github.com|https://x-access-token:${GITHUB_TOKEN}@github.com|"
     else
         echo "$url"
