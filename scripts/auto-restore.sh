@@ -37,6 +37,11 @@ start_glm_proxy() {
     fi
     
     if [ -f /root/glm-proxy/glm_proxy.py ] && [ -f /tmp/working_api_key.txt ]; then
+        # Auto-install missing Python dependencies
+        if ! python3 -c "import httpx" 2>/dev/null; then
+            log "STEP 2: Installing httpx..."
+            pip3 install httpx -q 2>>/tmp/glm_proxy.log || log "STEP 2: httpx install failed"
+        fi
         cd /root/glm-proxy
         nohup python3 glm_proxy.py --port 9997 > /tmp/glm_proxy.log 2>&1 &
         echo $! > "$pid_file"
@@ -44,7 +49,7 @@ start_glm_proxy() {
         if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
             log "STEP 2: Started (PID $(cat "$pid_file"))"
         else
-            log "STEP 2: Failed to start"
+            log "STEP 2: Failed to start (check /tmp/glm_proxy.log)"
         fi
     else
         log "STEP 2: Missing files (glm_proxy.py or API key), skip"
@@ -61,7 +66,30 @@ start_cf_tunnel() {
         return 0
     fi
     
-    if command -v cloudflared >/dev/null 2>&1 && [ -f /tmp/cf_tunnel_token.txt ]; then
+    # Auto-download cloudflared if not installed
+    if ! command -v cloudflared >/dev/null 2>&1; then
+        log "STEP 3: cloudflared not found, downloading..."
+        local arch; arch=$(uname -m)
+        case "$arch" in
+            aarch64|arm64) arch="arm64" ;;
+            x86_64|amd64)  arch="amd64" ;;
+            *) log "STEP 3: Unsupported arch $arch, skip"; return 0 ;;
+        esac
+        local cf_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}"
+        # Try direct, then mirror
+        if curl -sL -o /usr/local/bin/cloudflared "$cf_url" 2>/dev/null && [ -s /usr/local/bin/cloudflared ]; then
+            chmod +x /usr/local/bin/cloudflared
+            log "STEP 3: cloudflared downloaded"
+        elif curl -sL -o /usr/local/bin/cloudflared "https://ghfast.top/${cf_url}" 2>/dev/null && [ -s /usr/local/bin/cloudflared ]; then
+            chmod +x /usr/local/bin/cloudflared
+            log "STEP 3: cloudflared downloaded (via mirror)"
+        else
+            log "STEP 3: cloudflared download failed, skip"
+            return 0
+        fi
+    fi
+
+    if [ -f /tmp/cf_tunnel_token.txt ]; then
         local token; token=$(cat /tmp/cf_tunnel_token.txt 2>/dev/null)
         if [ -n "$token" ]; then
             nohup cloudflared tunnel --no-autoupdate run --token "$token" > /tmp/cloudflared.log 2>&1 &
@@ -70,13 +98,13 @@ start_cf_tunnel() {
             if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
                 log "STEP 3: Started (PID $(cat "$pid_file"))"
             else
-                log "STEP 3: Failed to start"
+                log "STEP 3: Failed to start (check /tmp/cloudflared.log)"
             fi
         else
             log "STEP 3: Token empty, skip"
         fi
     else
-        log "STEP 3: cloudflared or token not found, skip"
+        log "STEP 3: cf_tunnel_token.txt not found, skip"
     fi
 }
 

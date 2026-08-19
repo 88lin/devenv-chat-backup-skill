@@ -251,8 +251,13 @@ do_restore() {
         cd "$REPO_DIR" || true
         local pull_url; pull_url=$(auth_url "$REPO_URL")
         git remote set-url origin "$pull_url" 2>/dev/null
-        timeout "$GIT_TIMEOUT" git pull --depth 1 origin main 2>>"$BACKUP_LOG" || log "RESTORE: pull failed"
-        git remote set-url origin "$REPO_URL" 2>/dev/null
+        if ! timeout "$GIT_TIMEOUT" git pull --depth 1 origin main 2>>"$BACKUP_LOG"; then
+            log "RESTORE: pull failed, re-cloning"
+            git remote set-url origin "$REPO_URL" 2>/dev/null
+            git_sync_repo clone || log "RESTORE: re-clone also failed"
+        else
+            git remote set-url origin "$REPO_URL" 2>/dev/null
+        fi
     fi
     [ -d "$REPO_DIR/hwcloud-data" ] || { log "RESTORE: no data (clone/pull failed or repo empty)"; return 1; }
     mkdir -p "$LOCAL_DIR/sessions"
