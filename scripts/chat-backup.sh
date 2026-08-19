@@ -286,8 +286,8 @@ do_backup() {
         fi
     fi
     cd "$REPO_DIR" || { release_lock; return 1; }
-    git config user.email "88lin@users.noreply.github.com" 2>/dev/null
-    git config user.name "88lin" 2>/dev/null
+    git config user.email >/dev/null 2>&1 || git config user.email "${GIT_AUTHOR_EMAIL:-backup@localhost}" 2>/dev/null
+    git config user.name >/dev/null 2>&1 || git config user.name "${GIT_AUTHOR_NAME:-backup}" 2>/dev/null
     git remote set-url origin "$REPO_URL" 2>/dev/null
     # Use auth URL for pull if token available
     local pull_url; pull_url=$(auth_url "$REPO_URL")
