@@ -85,8 +85,8 @@ start_cf_tunnel() {
         esac
         local cf_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}"
         local cf_ok=false
-        # Use ghfast.top mirror directly (direct GitHub is too slow in this network). Validate: size > 10MB AND --version runs.
-        for url in "https://ghfast.top/${cf_url}"; do
+        # Try ghfast.top mirror first, fall back to direct GitHub. Validate: size > 10MB AND --version runs.
+        for url in "https://ghfast.top/${cf_url}" "$cf_url"; do
             log "STEP 3: downloading cloudflared from $url ..."
             curl -fSL --connect-timeout 10 --max-time 60 -o /usr/local/bin/cloudflared "$url" 2>/dev/null
             local sz=0; [ -f /usr/local/bin/cloudflared ] && sz=$(stat -c %s /usr/local/bin/cloudflared 2>/dev/null || echo 0)
