@@ -89,6 +89,14 @@ chmod +x /root/*.sh
 # 修改脚本顶部的 REPO_URL 为你自己的仓库地址
 # （编辑 /root/chat-backup.sh 第 19 行的 REPO_URL）
 
+# ⚠️ 重要：配置 GitHub Token（私有仓库必须，否则 restore 会静默失败）
+# 方式一：写入文件（推荐，容器重启后不丢失）
+echo "YOUR_TOKEN" > /tmp/github_token.txt
+# 方式二：环境变量
+export GITHUB_TOKEN="YOUR_TOKEN"
+# 方式三：home 目录文件
+echo "YOUR_TOKEN" > ~/.git_token
+
 # 一键设置（首次备份 + 启动守护进程 + 配置 .bashrc + 开启免确认）
 /root/chat-backup.sh setup
 ```
@@ -193,7 +201,8 @@ auto-restore.sh 执行流程：
 
 > ⚠️ 以下经验全部来自实际踩坑，详见 [references/pitfalls.md](references/pitfalls.md)
 
-1. **rsync 不可用** → 用 `cp -rf` 替代（DevEnv 精简环境无 rsync）
+1. **私有仓库 clone 无认证** → 必须配置 `GITHUB_TOKEN`（环境变量 / `/tmp/github_token.txt` / `~/.git_token`），否则 restore 静默失败（坑 20）
+2. **rsync 不可用** → 用 `cp -rf` 替代（DevEnv 精简环境无 rsync）
 2. **git 命令无超时会卡死** → 所有 git 命令加 `timeout 30s`
 3. **守护进程 CWD 会丢失** → 启动时 `cd /root`
 4. **crontab 不可用** → 用 `setsid + nohup + while 循环` 替代

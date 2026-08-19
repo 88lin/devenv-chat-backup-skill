@@ -370,6 +370,56 @@ sqlite3 /root/.ai/memory.db "SELECT COUNT(*) FROM messages;"
 
 ---
 
+## 坑 20：私有仓库 clone 无认证 + 错误被 2>/dev/null 吞掉 = 静默恢复失败
+
+### 现象
+
+容器重启后 `auto-restore.sh` 输出 `RESTORE: no data`，Sessions: 0。
+日志中没有错误信息，只有 `RESTORE: no data` 一行。`.git` 目录存在但为空。
+
+### 根因
+
+`chat-backup.sh` 的 `do_restore()` 和 `do_backup()` 中，git clone 命令使用 `REPO_MIRROR` 和 `REPO_URL` 但**不携带认证凭据**：
+
+```bash
+# ❌ 旧代码：私有仓库无 token，clone 失败
+timeout "$GIT_TIMEOUT" git clone --depth 1 "$REPO_MIRROR" "$REPO_DIR" 2>/dev/null
+```
+
+私有仓库需要 token 认证，但 URL 中没有 token。clone 失败后，`2>/dev/null` 把错误信息完全吞掉，脚本看不到失败原因，只看到 `hwcloud-data` 目录不存在 → 输出 `RESTORE: no data`。
+
+### 解决方案
+
+1. **新增 `GITHUB_TOKEN` 自动解析**：从环境变量 → `/tmp/github_token.txt` → `~/.git_token` 依次读取
+2. **新增 `auth_url()` 函数**：将 token 注入 GitHub URL（`https://x-access-token:TOKEN@github.com/...`）
+3. **新增 `git_sync_repo()` 函数**：依次尝试「认证镜像 → 认证直连 → 无认证镜像 → 无认证直连」，每次失败都记录错误日志
+4. **移除 `2>/dev/null`**：clone 错误改为 `2>>"$BACKUP_LOG"` 写入日志，不再静默吞掉
+
+### 配置方式
+
+```bash
+# 方式一：环境变量
+export GITHUB_TOKEN="ghp_xxxxxxxxxxxx"
+
+# 方式二：写入文件（推荐，容器重启后不丢失）
+echo "ghp_xxxxxxxxxxxx" > /tmp/github_token.txt
+
+# 方式三：home 目录文件
+echo "ghp_xxxxxxxxxxxx" > ~/.git_token
+```
+
+### 验证
+
+```bash
+# 设置 token 后执行恢复
+bash /root/chat-backup.sh restore
+# 日志应显示 "GIT: clone ok" 而非 "RESTORE: no data"
+tail -20 /var/log/chat-backup.log
+```
+
+
+---
+
 ## 经验总结
 
 1. **容器环境 ≠ 完整 Linux**：很多常用工具（rsync、crontab、curl 某些域名）可能不可用，要有替代方案
