@@ -48,6 +48,7 @@ git_sync_repo() {
     local auth_mirror auth_direct
     auth_mirror=$(auth_url "$REPO_MIRROR")
     auth_direct=$(auth_url "$REPO_URL")
+    cd /tmp 2>/dev/null || cd /  # leave REPO_DIR before rm -rf
     rm -rf "$REPO_DIR"
     local err
     for url in "$auth_mirror" "$auth_direct" "$REPO_MIRROR" "$REPO_URL"; do
