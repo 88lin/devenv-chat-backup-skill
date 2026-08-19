@@ -50,11 +50,18 @@ cp /tmp/recover/scripts/*.sh /root/ && chmod +x /root/*.sh
 cp -rf /tmp/recover/scripts/glm-proxy /root/glm-proxy 2>/dev/null
 cp -f /tmp/recover/tmp-data/*.txt /tmp/ 2>/dev/null
 
-# 第3行：一键恢复全部服务
+# 第3行：写入 GitHub Token（⚠️ 必须做！否则 restore 会静默失败）
+echo "YOUR_TOKEN" > /tmp/github_token.txt
+
+# 第4行：一键恢复全部服务
 bash /root/auto-restore.sh
 ```
 
 > **镜像不可用？** 去掉 `https://ghfast.top/` 前缀直接克隆即可。
+>
+> ⚠️ **第3行很关键**：`auto-restore.sh` 内部会再 clone 一次备份仓库来恢复数据，
+> 如果没有 token，私有仓库 clone 会静默失败（日志只显示 `RESTORE: no data`）。
+> Token 也可以通过环境变量传入：`GITHUB_TOKEN="YOUR_TOKEN" bash /root/auto-restore.sh`
 
 auto-restore.sh 会依次恢复：
 1. ✅ 聊天历史（sessions、memory.db、settings.json、SOUL.md）
