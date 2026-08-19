@@ -11,8 +11,16 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$RESTORE_LOG" 2>/dev/null; 
 restore_chat_history() {
     log "STEP 1: Restoring chat history..."
     if [ -f /root/chat-backup.sh ]; then
-        bash /root/chat-backup.sh restore 2>&1 | while read line; do log "  $line"; done
-        log "STEP 1: Done"
+        local restore_output restore_rc
+        restore_output=$(bash /root/chat-backup.sh restore 2>&1)
+        restore_rc=$?
+        # Log all output lines so errors are visible (not silently swallowed)
+        echo "$restore_output" | while IFS= read -r line; do log "  $line"; done
+        if [ $restore_rc -eq 0 ]; then
+            log "STEP 1: Done"
+        else
+            log "STEP 1: FAILED (exit code $restore_rc) — check /var/log/chat-backup.log for details"
+        fi
     else
         log "STEP 1: chat-backup.sh not found, skip"
     fi

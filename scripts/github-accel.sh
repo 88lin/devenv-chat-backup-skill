@@ -62,29 +62,34 @@ accel_clone() {
     fi
     
     # 尝试直接 clone（可能已经够快）
+    local clone_err
     log "CLONE: trying direct: $url"
-    if timeout 10 git clone --depth 1 "$url" "$target" 2>/dev/null; then
+    clone_err=$(timeout 10 git clone --depth 1 "$url" "$target" 2>&1)
+    if [ $? -eq 0 ] && [ -d "$target/.git" ]; then
         log "CLONE: direct success"
         echo "Clone success (direct)"
         return 0
     fi
+    log "CLONE: direct failed: $(echo "$clone_err" | tail -1)"
     
     # 尝试镜像加速
     local mirror; mirror=$(find_fastest_mirror)
     if [ -n "$mirror" ]; then
         local accel_url="${mirror}${url}"
         log "CLONE: trying mirror: $accel_url"
-        if timeout 30 git clone --depth 1 "$accel_url" "$target" 2>/dev/null; then
+        clone_err=$(timeout 30 git clone --depth 1 "$accel_url" "$target" 2>&1)
+        if [ $? -eq 0 ] && [ -d "$target/.git" ]; then
             log "CLONE: mirror success"
             # 修正 remote URL
             cd "$target" 2>/dev/null && git remote set-url origin "$url" 2>/dev/null
             echo "Clone success (via $mirror)"
             return 0
         fi
+        log "CLONE: mirror failed: $(echo "$clone_err" | tail -1)"
     fi
     
     log "CLONE: all methods failed"
-    echo "Clone failed"
+    echo "Clone failed: $(echo "$clone_err" | tail -1)"
     return 1
 }
 
@@ -100,27 +105,32 @@ accel_pull() {
         return 1
     fi
     
+    local pull_err
     log "PULL: trying direct: $url"
-    if timeout 15 git pull --depth 1 "$remote" "$branch" 2>/dev/null; then
+    pull_err=$(timeout 15 git pull --depth 1 "$remote" "$branch" 2>&1)
+    if [ $? -eq 0 ]; then
         log "PULL: direct success"
         echo "Pull success (direct)"
         return 0
     fi
+    log "PULL: direct failed: $(echo "$pull_err" | tail -1)"
     
     # 尝试镜像
     local mirror; mirror=$(find_fastest_mirror)
     if [ -n "$mirror" ]; then
         local accel_url="${mirror}${url}"
         log "PULL: trying mirror: $accel_url"
-        if timeout 30 git pull --depth 1 "$accel_url" "$branch" 2>/dev/null; then
+        pull_err=$(timeout 30 git pull --depth 1 "$accel_url" "$branch" 2>&1)
+        if [ $? -eq 0 ]; then
             log "PULL: mirror success"
             echo "Pull success (via $mirror)"
             return 0
         fi
+        log "PULL: mirror failed: $(echo "$pull_err" | tail -1)"
     fi
     
     log "PULL: all methods failed"
-    echo "Pull failed"
+    echo "Pull failed: $(echo "$pull_err" | tail -1)"
     return 1
 }
 

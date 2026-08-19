@@ -19,6 +19,43 @@ GLM_PROXY_PID_FILE="/tmp/glm_proxy.pid"
 CF_TUNNEL_PID_FILE="/tmp/cloudflared.pid"
 export GIT_TERMINAL_PROMPT=0
 
+# --- GitHub token resolution (fixes silent failure on private repos) ---
+# Token is read from: env var GITHUB_TOKEN -> /tmp/github_token.txt -> ~/.git_token
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+[ -z "$GITHUB_TOKEN" ] && [ -f /tmp/github_token.txt ] && GITHUB_TOKEN=$(cat /tmp/github_token.txt 2>/dev/null)
+[ -z "$GITHUB_TOKEN" ] && [ -f "$HOME/.git_token" ] && GITHUB_TOKEN=$(cat "$HOME/.git_token" 2>/dev/null)
+
+# Inject token into a GitHub URL for private repo auth.
+auth_url() {
+    local url="$1"
+    if [ -n "$GITHUB_TOKEN" ] && echo "$url" | grep -q 'https://github.com'; then
+        echo "$url" | sed "s|https://github.com|https://x-access-token:${GITHUB_TOKEN}@github.com|"
+    else
+        echo "$url"
+    fi
+}
+
+# Clone the backup repo with auth + error logging (no more silent 2>/dev/null).
+# Tries: auth mirror -> auth direct -> no-auth mirror -> no-auth direct.
+git_sync_repo() {
+    local auth_mirror auth_direct
+    auth_mirror=$(auth_url "$REPO_MIRROR")
+    auth_direct=$(auth_url "$REPO_URL")
+    rm -rf "$REPO_DIR"
+    local err
+    for url in "$auth_mirror" "$auth_direct" "$REPO_MIRROR" "$REPO_URL"; do
+        err=$(timeout "$GIT_TIMEOUT" git clone --depth 1 "$url" "$REPO_DIR" 2>&1)
+        if [ -d "$REPO_DIR/.git" ]; then
+            cd "$REPO_DIR" && git remote set-url origin "$REPO_URL" 2>/dev/null
+            log "GIT: clone ok ($url)"
+            return 0
+        fi
+        log "GIT: clone failed ($url): $(echo "$err" | tail -1)"
+    done
+    log "GIT: all clone methods failed"
+    return 1
+}
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$BACKUP_LOG" 2>/dev/null; }
 
 acquire_lock() {
@@ -180,26 +217,44 @@ fix_session_visibility() {
 do_backup() {
     acquire_lock || return 0; log "BACKUP: start"
     if [ ! -d "$REPO_DIR/.git" ]; then
-        rm -rf "$REPO_DIR"; timeout "$GIT_TIMEOUT" git clone --depth 1 "$REPO_MIRROR" "$REPO_DIR" 2>/dev/null || timeout "$GIT_TIMEOUT" git clone --depth 1 "$REPO_URL" "$REPO_DIR" 2>/dev/null
-        if [ ! -d "$REPO_DIR/.git" ]; then mkdir -p "$REPO_DIR"; git init "$REPO_DIR" 2>/dev/null; cd "$REPO_DIR" && git remote add origin "$REPO_URL" 2>/dev/null; fi
-    cd "$REPO_DIR" && git remote set-url origin "$REPO_URL" 2>/dev/null
+        if ! git_sync_repo clone; then
+            log "BACKUP: clone failed, initializing local-only repo"
+            mkdir -p "$REPO_DIR"; git init "$REPO_DIR" 2>/dev/null; cd "$REPO_DIR" && git remote add origin "$REPO_URL" 2>/dev/null
+        fi
     fi
     cd "$REPO_DIR" || { release_lock; return 1; }
-    timeout "$GIT_TIMEOUT" git pull --depth 1 origin main 2>/dev/null || true
+    git remote set-url origin "$REPO_URL" 2>/dev/null
+    # Use auth URL for pull if token available
+    local pull_url; pull_url=$(auth_url "$REPO_URL")
+    git remote set-url origin "$pull_url" 2>/dev/null
+    timeout "$GIT_TIMEOUT" git pull --depth 1 origin main 2>>"$BACKUP_LOG" || log "BACKUP: pull failed (non-fatal)"
+    git remote set-url origin "$REPO_URL" 2>/dev/null  # restore clean URL
     sync_to_repo
     timeout "$GIT_TIMEOUT" git add -A 2>/dev/null
     local changes; changes=$(git diff --cached --stat 2>/dev/null)
     if [ -z "$changes" ]; then log "BACKUP: no changes"; release_lock; return 0; fi
     timeout "$GIT_TIMEOUT" git commit -m "backup: $(date '+%Y-%m-%d %H:%M:%S') - $(find "$LOCAL_DIR/sessions" -name "*.jsonl" 2>/dev/null | wc -l) sessions" 2>/dev/null
-    local push_rc; timeout "$GIT_TIMEOUT" git push origin HEAD:main --force 2>/dev/null && push_rc=0 || push_rc=1
+    # Use auth URL for push
+    git remote set-url origin "$pull_url" 2>/dev/null
+    local push_rc; timeout "$GIT_TIMEOUT" git push origin HEAD:main --force 2>>"$BACKUP_LOG" && push_rc=0 || push_rc=1
+    git remote set-url origin "$REPO_URL" 2>/dev/null  # restore clean URL
     log "BACKUP: push $([ $push_rc -eq 0 ] && echo ok || echo fail)"; release_lock; return $push_rc
 }
 
 do_restore() {
     log "RESTORE: start"
-    if [ ! -d "$REPO_DIR/.git" ]; then rm -rf "$REPO_DIR"; timeout "$GIT_TIMEOUT" git clone --depth 1 "$REPO_MIRROR" "$REPO_DIR" 2>/dev/null || timeout "$GIT_TIMEOUT" git clone --depth 1 "$REPO_URL" "$REPO_DIR" 2>/dev/null
-    else cd "$REPO_DIR"; timeout "$GIT_TIMEOUT" git pull --depth 1 origin main 2>/dev/null || true; fi
-    [ -d "$REPO_DIR/hwcloud-data" ] || { log "RESTORE: no data"; return 1; }
+    if [ ! -d "$REPO_DIR/.git" ]; then
+        if ! git_sync_repo clone; then
+            log "RESTORE: clone failed"
+        fi
+    else
+        cd "$REPO_DIR" || true
+        local pull_url; pull_url=$(auth_url "$REPO_URL")
+        git remote set-url origin "$pull_url" 2>/dev/null
+        timeout "$GIT_TIMEOUT" git pull --depth 1 origin main 2>>"$BACKUP_LOG" || log "RESTORE: pull failed"
+        git remote set-url origin "$REPO_URL" 2>/dev/null
+    fi
+    [ -d "$REPO_DIR/hwcloud-data" ] || { log "RESTORE: no data (clone/pull failed or repo empty)"; return 1; }
     mkdir -p "$LOCAL_DIR/sessions"
     [ -d "$REPO_DIR/hwcloud-data/sessions" ] && cp -rfp "$REPO_DIR/hwcloud-data/sessions/"* "$LOCAL_DIR/sessions/" 2>/dev/null
     if [ -f "$REPO_DIR/hwcloud-data/memory.db" ]; then
