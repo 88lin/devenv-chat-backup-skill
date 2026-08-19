@@ -32,7 +32,7 @@ DevEnv 容器**销毁重建**时，overlay 层数据全部清除，包括：
 
 ```bash
 # 第1行：克隆备份仓库（使用镜像加速，把 YOUR_TOKEN 换成你的 GitHub Token）
-git clone https://ghfast.top/https://YOUR_TOKEN@github.com/YOUR_USER/ai-shell-backup.git /tmp/recover
+git clone https://YOUR_USER:YOUR_TOKEN@ghfast.top/https://github.com/YOUR_USER/ai-shell-backup.git /tmp/recover
 
 # 第2行：复制脚本和配置到 /root/
 cp /tmp/recover/scripts/*.sh /root/ && chmod +x /root/*.sh
