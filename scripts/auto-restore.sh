@@ -66,9 +66,17 @@ start_cf_tunnel() {
         return 0
     fi
     
-    # Auto-download cloudflared if not installed
+    # Ensure cloudflared binary exists AND works (not just present — a partial
+    # download can leave a corrupted ELF that segfaults on execution).
+    local need_dl=false
     if ! command -v cloudflared >/dev/null 2>&1; then
-        log "STEP 3: cloudflared not found, downloading..."
+        need_dl=true
+    elif ! cloudflared --version >/dev/null 2>&1; then
+        log "STEP 3: existing cloudflared binary is broken (segfault?), re-downloading..."
+        need_dl=true
+    fi
+
+    if [ "$need_dl" = true ]; then
         local arch; arch=$(uname -m)
         case "$arch" in
             aarch64|arm64) arch="arm64" ;;
@@ -76,15 +84,26 @@ start_cf_tunnel() {
             *) log "STEP 3: Unsupported arch $arch, skip"; return 0 ;;
         esac
         local cf_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}"
-        # Try direct, then mirror
-        if curl -sL -o /usr/local/bin/cloudflared "$cf_url" 2>/dev/null && [ -s /usr/local/bin/cloudflared ]; then
-            chmod +x /usr/local/bin/cloudflared
-            log "STEP 3: cloudflared downloaded"
-        elif curl -sL -o /usr/local/bin/cloudflared "https://ghfast.top/${cf_url}" 2>/dev/null && [ -s /usr/local/bin/cloudflared ]; then
-            chmod +x /usr/local/bin/cloudflared
-            log "STEP 3: cloudflared downloaded (via mirror)"
-        else
-            log "STEP 3: cloudflared download failed, skip"
+        local cf_ok=false
+        # Try direct first, then ghfast.top mirror. Validate: size > 10MB AND --version runs.
+        for url in "$cf_url" "https://ghfast.top/${cf_url}"; do
+            log "STEP 3: downloading cloudflared from $url ..."
+            curl -fSL -o /usr/local/bin/cloudflared "$url" 2>/dev/null
+            local sz=0; [ -f /usr/local/bin/cloudflared ] && sz=$(stat -c %s /usr/local/bin/cloudflared 2>/dev/null || echo 0)
+            if [ "$sz" -gt 10485760 ]; then
+                chmod +x /usr/local/bin/cloudflared
+                if /usr/local/bin/cloudflared --version >/dev/null 2>&1; then
+                    log "STEP 3: cloudflared ok (${sz} bytes, $(cloudflared --version 2>&1))"
+                    cf_ok=true; break
+                else
+                    log "STEP 3: downloaded ${sz} bytes but binary won't run, trying next source..."
+                fi
+            else
+                log "STEP 3: download incomplete (${sz} bytes < 10MB), trying next source..."
+            fi
+        done
+        if [ "$cf_ok" != true ]; then
+            log "STEP 3: cloudflared download failed from all sources, skip"
             return 0
         fi
     fi
