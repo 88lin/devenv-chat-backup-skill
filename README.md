@@ -2,6 +2,17 @@
 
 华为云 DevEnv 聊天历史自动备份与恢复 + GLM Proxy 备份 + 容器保活 **统一方案**。
 
+## 📋 新人首次使用流程
+
+本 skill 是备份/恢复方案，**不负责首次搭建 GLM 代理**。第一天请按顺序操作：
+
+| 顺序 | Skill | 做什么 |
+|------|-------|--------|
+| 第1步 | **[glm-proxy-skill](https://github.com/88lin/glm-proxy-skill)** | 提取 API Key、安装 GLM 代理、配置 Cloudflare Tunnel |
+| 第2步 | **本 skill** | 设置自动备份（会把代理脚本 + Key 一起备份到你的 GitHub 私有仓库） |
+
+> 第2步完成后，以后容器销毁重建只需 clone 备份仓库 + auto-restore.sh，不再需要任何 skill。
+
 ## ⚠️ 重要：容器销毁重建后不能全自动
 
 DevEnv 容器**销毁重建**时，overlay 层数据全部清除，包括：
