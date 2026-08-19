@@ -400,7 +400,7 @@ try:
                 t, _ = extract_content(r[0])
                 title = t[:100] if t else "(no title)"
         cn.execute("INSERT OR IGNORE INTO sessions (id, cwd, title, created_at, updated_at, additional_directories, meta) VALUES (?,?,?,?,?,?,?)",
-            (sid, wd or "/root/workspace", title, ts_to_iso(sts), ts_to_iso(uat) if uat else ts_to_iso(sts), "[]", "{}"))
+            (sid, wd or "/root/workspace", title, ts_to_iso(sts), ts_to_iso(uat) if uat else ts_to_iso(sts), "[]", '{"_clientMode":"ai","_hasPrompted":true,"config":{"mode":"auto","model":"hwdevspace/glm-5.2","thought_level":"medium"},"kind":"acp","mode":"auto","previous_mode":"","total_tokens":0}'))
         co.execute("SELECT message_id, role, content_json, tool_name, tool_call_id, reasoning FROM messages WHERE session_id=? ORDER BY message_id", (sid,))
         cnt = 0
         for mid, role, cj, tn, tcid, rsn in co.fetchall():
