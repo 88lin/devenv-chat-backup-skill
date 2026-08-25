@@ -7,7 +7,7 @@ LOCAL_DIR="/root/.huawei/hwcloud"
 SCRIPT_PATH="/root/chat-backup.sh"
 BACKUP_LOG="/var/log/chat-backup.log"
 PID_FILE="/var/run/chat-backup.pid"
-BACKUP_INTERVAL=3600
+BACKUP_INTERVAL=14400
 GIT_TIMEOUT=30
 LOCK_DIR="/var/run/chat-backup.lock"
 STALE_LOCK_SEC=300
@@ -286,8 +286,8 @@ do_backup() {
         fi
     fi
     cd "$REPO_DIR" || { release_lock; return 1; }
-    git config user.email >/dev/null 2>&1 || git config user.email "${GIT_AUTHOR_EMAIL:-backup@localhost}" 2>/dev/null
-    git config user.name >/dev/null 2>&1 || git config user.name "${GIT_AUTHOR_NAME:-backup}" 2>/dev/null
+    git config user.email "88lin@users.noreply.github.com" 2>/dev/null
+    git config user.name "88lin" 2>/dev/null
     git remote set-url origin "$REPO_URL" 2>/dev/null
     # Use auth URL for pull if token available
     local pull_url; pull_url=$(auth_url "$REPO_URL")
