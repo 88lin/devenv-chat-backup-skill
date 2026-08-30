@@ -469,7 +469,7 @@ sqlite3 /root/.huawei/hwcloud/memory.db \
 
 ## 坑 21：cloudflared 下载不完整 = 损坏二进制 + SIGSEGV + 隧道起不来
 
-**现象**：`auto-restore.sh` STEP 3 报 `Failed to start`，`/tmp/cloudflared.log` 显示 `Permission denied` 或进程秒退。手动跑 `cloudflared --version` 返回 exit 139（SIGSEGV）。
+**现象**：`auto-restore.sh` STEP 3 报 `Failed to start`，`/root/cloudflared.log` 显示 `Permission denied` 或进程秒退。手动跑 `cloudflared --version` 返回 exit 139（SIGSEGV）。
 
 **根因**：`curl` 下载 cloudflared 二进制时网络中断或 GitHub 直连太慢，只下了一部分（实测 1.06MB / 完整 37.4MB）。旧代码只检查 `[ -s file ]`（文件非空），1MB 的半截文件通过了检查，`chmod +x` 后一执行就段错误。
 
@@ -500,7 +500,7 @@ done
 
 ```bash
 # 模拟损坏：截断 cloudflared
-head -c 1000000 /usr/local/bin/cloudflared > /tmp/bad_cf && cp /tmp/bad_cf /usr/local/bin/cloudflared
+head -c 1000000 /usr/local/bin/cloudflared > /root/bad_cf && cp /root/bad_cf /usr/local/bin/cloudflared
 chmod +x /usr/local/bin/cloudflared
 # 跑恢复，应自动检测损坏并重新下载
 bash /root/auto-restore.sh

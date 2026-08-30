@@ -2,7 +2,7 @@
 # chat-backup.sh — AI Shell 聊天历史 + GLM Proxy 自动备份/恢复脚本
 REPO_URL="https://github.com/88lin/ai-shell-backup.git"
 REPO_MIRROR="https://ghfast.top/${REPO_URL}"
-REPO_DIR="/tmp/ai-shell-backup"
+REPO_DIR="/root/ai-shell-backup"
 LOCAL_DIR="/root/.huawei/hwcloud"
 SCRIPT_PATH="/root/chat-backup.sh"
 BACKUP_LOG="/var/log/chat-backup.log"
@@ -17,14 +17,14 @@ GLM_PROXY_DIR="/root/glm-proxy"
 GLM_PROXY_PORT=9997
 RUNTIME_DB_DIR="/root/.hwcloud/memory"
 RUNTIME_DB="$RUNTIME_DB_DIR/memory.db"
-GLM_PROXY_PID_FILE="/tmp/glm_proxy.pid"
-CF_TUNNEL_PID_FILE="/tmp/cloudflared.pid"
+GLM_PROXY_PID_FILE="/root/glm_proxy.pid"
+CF_TUNNEL_PID_FILE="/root/cloudflared.pid"
 export GIT_TERMINAL_PROMPT=0
 
 # --- GitHub token resolution (fixes silent failure on private repos) ---
-# Token is read from: env var GITHUB_TOKEN -> /tmp/github_token.txt -> ~/.git_token
+# Token is read from: env var GITHUB_TOKEN -> /root/github_token.txt -> ~/.git_token
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
-[ -z "$GITHUB_TOKEN" ] && [ -f /tmp/github_token.txt ] && GITHUB_TOKEN=$(cat /tmp/github_token.txt 2>/dev/null)
+[ -z "$GITHUB_TOKEN" ] && [ -f /root/github_token.txt ] && GITHUB_TOKEN=$(cat /root/github_token.txt 2>/dev/null)
 [ -z "$GITHUB_TOKEN" ] && [ -f "$HOME/.git_token" ] && GITHUB_TOKEN=$(cat "$HOME/.git_token" 2>/dev/null)
 
 # Inject token into a GitHub URL for private repo auth.
@@ -50,7 +50,7 @@ git_sync_repo() {
     local auth_mirror auth_direct
     auth_mirror=$(auth_url "$REPO_MIRROR")
     auth_direct=$(auth_url "$REPO_URL")
-    cd /tmp 2>/dev/null || cd /  # leave REPO_DIR before rm -rf
+    cd /root 2>/dev/null || cd /  # leave REPO_DIR before rm -rf
     rm -rf "$REPO_DIR"
     local err
     for url in "$auth_mirror" "$auth_direct" "$REPO_MIRROR" "$REPO_URL"; do
@@ -163,7 +163,7 @@ sync_to_repo() {
         [ -f "$LOCAL_DIR/$f" ] && cp -f "$LOCAL_DIR/$f" "$REPO_DIR/hwcloud-data/$f"
     done
     if [ -d "$GLM_PROXY_DIR" ]; then cp -rf "$GLM_PROXY_DIR/"* "$REPO_DIR/scripts/glm-proxy/" 2>/dev/null; fi
-    for f in /tmp/working_api_key.txt /tmp/proxy_api_key.txt /tmp/cf_tunnel_token.txt; do
+    for f in /root/working_api_key.txt /root/proxy_api_key.txt /root/cf_tunnel_token.txt; do
         [ -f "$f" ] && cp -f "$f" "$REPO_DIR/tmp-data/$(basename $f)"
     done
     for f in /root/chat-backup.sh /root/keepalive.sh /root/github-accel.sh /root/auto-restore.sh; do
@@ -182,7 +182,7 @@ merge_session_db() {
     local backup_db="$1" live_db="$2"
     [ -f "$backup_db" ] || return 0; [ -f "$live_db" ] || return 0
     command -v sqlite3 >/dev/null 2>&1 || return 0
-    local tmp_db="/tmp/backup_merge_$$.db"
+    local tmp_db="/root/backup_merge_$$.db"
     cp -f "$backup_db" "$tmp_db" 2>/dev/null
     local merge_err
     merge_err=$(sqlite3 "$live_db" "$(printf "ATTACH DATABASE '%s' AS bk;\nINSERT OR REPLACE INTO sessions SELECT * FROM bk.sessions;\nINSERT OR IGNORE INTO messages (message_uid, session_id, role, content_json, search_text, tool_name, tool_call_id, tool_calls, finish_reason, reasoning, timestamp, token_count) SELECT message_uid, session_id, role, content_json, search_text, tool_name, tool_call_id, tool_calls, finish_reason, reasoning, timestamp, token_count FROM bk.messages;\nDETACH DATABASE bk;\n" "$tmp_db")" 2>&1)
@@ -193,7 +193,7 @@ merge_runtime_db() {
     local backup_db="$1" live_db="$2"
     [ -f "$backup_db" ] || return 0; [ -f "$live_db" ] || return 0
     command -v sqlite3 >/dev/null 2>&1 || return 0
-    local tmp_db="/tmp/runtime_merge_$$.db"
+    local tmp_db="/root/runtime_merge_$$.db"
     cp -f "$backup_db" "$tmp_db" 2>/dev/null
     # runtime DB schema: sessions(id TEXT PK), messages(id INTEGER PK, session_id TEXT)
     # Merge: bring in sessions and messages from backup that are missing in live DB
@@ -425,7 +425,7 @@ MIGRATE_EOF
     fi
     import_messages_from_jsonl
     for f in settings.json SOUL.md user_info.json sessions-index.json sessions-index.md; do [ -f "$REPO_DIR/hwcloud-data/$f" ] && cp -f "$REPO_DIR/hwcloud-data/$f" "$LOCAL_DIR/$f"; done
-    for f in working_api_key.txt proxy_api_key.txt cf_tunnel_token.txt; do [ -f "$REPO_DIR/tmp-data/$f" ] && cp -f "$REPO_DIR/tmp-data/$f" "/tmp/$f"; done
+    for f in working_api_key.txt proxy_api_key.txt cf_tunnel_token.txt; do [ -f "$REPO_DIR/tmp-data/$f" ] && cp -f "$REPO_DIR/tmp-data/$f" "/root/$f"; done
     [ -d "$REPO_DIR/scripts/glm-proxy" ] && mkdir -p "$GLM_PROXY_DIR" && cp -rf "$REPO_DIR/scripts/glm-proxy/"* "$GLM_PROXY_DIR/" 2>/dev/null
     for f in chat-backup.sh keepalive.sh github-accel.sh auto-restore.sh; do [ -f "$REPO_DIR/scripts/$f" ] && cp -f "$REPO_DIR/scripts/$f" "/root/$f" && chmod +x "/root/$f"; done
     fix_session_visibility; log "RESTORE: done"; echo "RESTORE: done! sessions=$(find "$LOCAL_DIR/sessions" -name "*.jsonl" | wc -l)"
@@ -436,9 +436,9 @@ start_glm_proxy() {
         log "GLM_PROXY: already running"; return 0
     fi
     [ -f "$GLM_PROXY_DIR/glm_proxy.py" ] || { log "GLM_PROXY: not found"; return 1; }
-    [ -f /tmp/working_api_key.txt ] || { log "GLM_PROXY: no API key"; return 1; }
+    [ -f /root/working_api_key.txt ] || { log "GLM_PROXY: no API key"; return 1; }
     cd "$GLM_PROXY_DIR"
-    nohup python3 glm_proxy.py --port "$GLM_PROXY_PORT" > /tmp/glm_proxy.log 2>&1 &
+    nohup python3 glm_proxy.py --port "$GLM_PROXY_PORT" > /root/glm_proxy.log 2>&1 &
     echo $! > "$GLM_PROXY_PID_FILE"
     sleep 2
     if kill -0 "$(cat "$GLM_PROXY_PID_FILE")" 2>/dev/null; then log "GLM_PROXY: started PID $(cat "$GLM_PROXY_PID_FILE")"
@@ -449,13 +449,13 @@ start_cf_tunnel() {
     if [ -f "$CF_TUNNEL_PID_FILE" ] && kill -0 "$(cat "$CF_TUNNEL_PID_FILE")" 2>/dev/null; then
         log "CF_TUNNEL: already running"; return 0
     fi
-    [ -f /tmp/cf_tunnel_token.txt ] || { log "CF_TUNNEL: no token"; return 0; }
+    [ -f /root/cf_tunnel_token.txt ] || { log "CF_TUNNEL: no token"; return 0; }
     command -v cloudflared >/dev/null 2>&1 || { log "CF_TUNNEL: cloudflared not found"; return 0; }
-    local cf_token; cf_token=$(cat /tmp/cf_tunnel_token.txt 2>/dev/null)
+    local cf_token; cf_token=$(cat /root/cf_tunnel_token.txt 2>/dev/null)
     if [ -n "$cf_token" ]; then
-        nohup cloudflared tunnel --no-autoupdate run --token "$cf_token" > /tmp/cloudflared.log 2>&1 &
+        nohup cloudflared tunnel --no-autoupdate run --token "$cf_token" > /root/cloudflared.log 2>&1 &
     else
-        nohup cloudflared tunnel --url http://localhost:"$GLM_PROXY_PORT" run glm-proxy > /tmp/cloudflared.log 2>&1 &
+        nohup cloudflared tunnel --url http://localhost:"$GLM_PROXY_PORT" run glm-proxy > /root/cloudflared.log 2>&1 &
     fi
     echo $! > "$CF_TUNNEL_PID_FILE"
     sleep 2; log "CF_TUNNEL: started PID $(cat "$CF_TUNNEL_PID_FILE")"

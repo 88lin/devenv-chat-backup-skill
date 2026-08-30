@@ -43,15 +43,15 @@ DevEnv 容器**销毁重建**时，overlay 层数据全部清除，包括：
 
 ```bash
 # 第1行：克隆备份仓库（使用镜像加速，把 YOUR_TOKEN 换成你的 GitHub Token）
-git clone https://YOUR_USER:YOUR_TOKEN@ghfast.top/https://github.com/YOUR_USER/ai-shell-backup.git /tmp/recover
+git clone https://YOUR_USER:YOUR_TOKEN@ghfast.top/https://github.com/YOUR_USER/ai-shell-backup.git /root/recover
 
 # 第2行：复制脚本和配置到 /root/
-cp /tmp/recover/scripts/*.sh /root/ && chmod +x /root/*.sh
-cp -rf /tmp/recover/scripts/glm-proxy /root/glm-proxy 2>/dev/null
-cp -f /tmp/recover/tmp-data/*.txt /tmp/ 2>/dev/null
+cp /root/recover/scripts/*.sh /root/ && chmod +x /root/*.sh
+cp -rf /root/recover/scripts/glm-proxy /root/glm-proxy 2>/dev/null
+cp -f /root/recover/root-data/*.txt /root/ 2>/dev/null
 
 # 第3行：写入 GitHub Token（⚠️ 必须做！否则 restore 会静默失败）
-echo "YOUR_TOKEN" > /tmp/github_token.txt
+echo "YOUR_TOKEN" > /root/github_token.txt
 
 # 第4行：一键恢复全部服务
 bash /root/auto-restore.sh
@@ -87,10 +87,10 @@ git config --global credential.helper store
 echo "https://YOUR_TOKEN@github.com" > ~/.git-credentials
 
 # 克隆本 skill 仓库（使用镜像加速）
-git clone https://ghfast.top/https://github.com/88lin/devenv-chat-backup-skill.git /tmp/skill
+git clone https://ghfast.top/https://github.com/88lin/devenv-chat-backup-skill.git /root/skill
 
 # 复制脚本到 /root/
-cp /tmp/skill/scripts/*.sh /root/
+cp /root/skill/scripts/*.sh /root/
 chmod +x /root/*.sh
 
 # 修改 chat-backup.sh 第 19 行的 REPO_URL 为你的备份仓库地址

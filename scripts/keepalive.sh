@@ -18,14 +18,14 @@ ensure_backup_running() {
 }
 
 ensure_glm_proxy() {
-    local pid_file="/tmp/glm_proxy.pid"
+    local pid_file="/root/glm_proxy.pid"
     if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
         return 0
     fi
     log "GLM_PROXY: not running, restarting..."
-    if [ -f /root/glm-proxy/glm_proxy.py ] && [ -f /tmp/working_api_key.txt ]; then
+    if [ -f /root/glm-proxy/glm_proxy.py ] && [ -f /root/working_api_key.txt ]; then
         cd /root/glm-proxy
-        nohup python3 glm_proxy.py --port 9997 > /tmp/glm_proxy.log 2>&1 &
+        nohup python3 glm_proxy.py --port 9997 > /root/glm_proxy.log 2>&1 &
         echo $! > "$pid_file"
         log "GLM_PROXY: restarted PID $!"
     else
@@ -34,15 +34,15 @@ ensure_glm_proxy() {
 }
 
 ensure_cf_tunnel() {
-    local pid_file="/tmp/cloudflared.pid"
+    local pid_file="/root/cloudflared.pid"
     if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
         return 0
     fi
     log "CF_TUNNEL: not running, restarting..."
-    if command -v cloudflared >/dev/null 2>&1 && [ -f /tmp/cf_tunnel_token.txt ]; then
-        local token; token=$(cat /tmp/cf_tunnel_token.txt 2>/dev/null)
+    if command -v cloudflared >/dev/null 2>&1 && [ -f /root/cf_tunnel_token.txt ]; then
+        local token; token=$(cat /root/cf_tunnel_token.txt 2>/dev/null)
         if [ -n "$token" ]; then
-            nohup cloudflared tunnel --no-autoupdate run --token "$token" > /tmp/cloudflared.log 2>&1 &
+            nohup cloudflared tunnel --no-autoupdate run --token "$token" > /root/cloudflared.log 2>&1 &
             echo $! > "$pid_file"
             log "CF_TUNNEL: restarted PID $!"
         else
@@ -54,9 +54,9 @@ ensure_cf_tunnel() {
 }
 
 touch_keepalive() {
-    touch /tmp/.keepalive_marker
+    touch /root/.keepalive_marker
     # Write current timestamp to prevent idle detection
-    date +%s > /tmp/.keepalive_ts
+    date +%s > /root/.keepalive_ts
 }
 
 run_keepalive() {
@@ -79,8 +79,8 @@ case "${1:-start}" in
         echo "=== Keepalive Status ==="
         echo "Keepalive: $([ -f "$KEEPALIVE_PID_FILE" ] && kill -0 "$(cat "$KEEPALIVE_PID_FILE")" 2>/dev/null && echo "running" || echo "stopped")"
         echo "Backup daemon: $([ -f "$BACKUP_PID_FILE" ] && kill -0 "$(cat "$BACKUP_PID_FILE")" 2>/dev/null && echo "running" || echo "stopped")"
-        echo "GLM Proxy: $([ -f /tmp/glm_proxy.pid ] && kill -0 "$(cat /tmp/glm_proxy.pid)" 2>/dev/null && echo "running" || echo "stopped")"
-        echo "CF Tunnel: $([ -f /tmp/cloudflared.pid ] && kill -0 "$(cat /tmp/cloudflared.pid)" 2>/dev/null && echo "running" || echo "stopped")"
+        echo "GLM Proxy: $([ -f /root/glm_proxy.pid ] && kill -0 "$(cat /root/glm_proxy.pid)" 2>/dev/null && echo "running" || echo "stopped")"
+        echo "CF Tunnel: $([ -f /root/cloudflared.pid ] && kill -0 "$(cat /root/cloudflared.pid)" 2>/dev/null && echo "running" || echo "stopped")"
         ;;
     stop)
         [ -f "$KEEPALIVE_PID_FILE" ] && kill "$(cat "$KEEPALIVE_PID_FILE")" 2>/dev/null && log "KEEPALIVE: stopped"

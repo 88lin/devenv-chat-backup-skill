@@ -29,27 +29,27 @@ restore_chat_history() {
 # 2. 启动 GLM Proxy
 start_glm_proxy() {
     log "STEP 2: Starting GLM Proxy..."
-    local pid_file="/tmp/glm_proxy.pid"
+    local pid_file="/root/glm_proxy.pid"
     
     if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
         log "STEP 2: Already running (PID $(cat "$pid_file"))"
         return 0
     fi
     
-    if [ -f /root/glm-proxy/glm_proxy.py ] && [ -f /tmp/working_api_key.txt ]; then
+    if [ -f /root/glm-proxy/glm_proxy.py ] && [ -f /root/working_api_key.txt ]; then
         # Auto-install missing Python dependencies
         if ! python3 -c "import httpx" 2>/dev/null; then
             log "STEP 2: Installing httpx..."
-            pip3 install httpx fastapi uvicorn -q 2>>/tmp/glm_proxy.log || log "STEP 2: deps install failed"
+            pip3 install httpx fastapi uvicorn -q 2>>/root/glm_proxy.log || log "STEP 2: deps install failed"
         fi
         cd /root/glm-proxy
-        nohup python3 glm_proxy.py --port 9997 > /tmp/glm_proxy.log 2>&1 &
+        nohup python3 glm_proxy.py --port 9997 > /root/glm_proxy.log 2>&1 &
         echo $! > "$pid_file"
         sleep 2
         if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
             log "STEP 2: Started (PID $(cat "$pid_file"))"
         else
-            log "STEP 2: Failed to start (check /tmp/glm_proxy.log)"
+            log "STEP 2: Failed to start (check /root/glm_proxy.log)"
         fi
     else
         log "STEP 2: Missing files (glm_proxy.py or API key), skip"
@@ -59,7 +59,7 @@ start_glm_proxy() {
 # 3. 启动 Cloudflare Tunnel
 start_cf_tunnel() {
     log "STEP 3: Starting Cloudflare Tunnel..."
-    local pid_file="/tmp/cloudflared.pid"
+    local pid_file="/root/cloudflared.pid"
     
     if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
         log "STEP 3: Already running (PID $(cat "$pid_file"))"
@@ -108,16 +108,16 @@ start_cf_tunnel() {
         fi
     fi
 
-    if [ -f /tmp/cf_tunnel_token.txt ]; then
-        local token; token=$(cat /tmp/cf_tunnel_token.txt 2>/dev/null)
+    if [ -f /root/cf_tunnel_token.txt ]; then
+        local token; token=$(cat /root/cf_tunnel_token.txt 2>/dev/null)
         if [ -n "$token" ]; then
-            nohup cloudflared tunnel --no-autoupdate run --token "$token" > /tmp/cloudflared.log 2>&1 &
+            nohup cloudflared tunnel --no-autoupdate run --token "$token" > /root/cloudflared.log 2>&1 &
             echo $! > "$pid_file"
             sleep 2
             if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
                 log "STEP 3: Started (PID $(cat "$pid_file"))"
             else
-                log "STEP 3: Failed to start (check /tmp/cloudflared.log)"
+                log "STEP 3: Failed to start (check /root/cloudflared.log)"
             fi
         else
             log "STEP 3: Token empty, skip"
@@ -155,8 +155,8 @@ show_final_status() {
     echo ""
     echo "=== Auto-Restore Complete ==="
     echo "Sessions: $(find "$LOCAL_DIR/sessions" -name "*.jsonl" 2>/dev/null | wc -l)"
-    echo "GLM Proxy: $([ -f /tmp/glm_proxy.pid ] && kill -0 "$(cat /tmp/glm_proxy.pid)" 2>/dev/null && echo "running" || echo "stopped")"
-    echo "CF Tunnel: $([ -f /tmp/cloudflared.pid ] && kill -0 "$(cat /tmp/cloudflared.pid)" 2>/dev/null && echo "running" || echo "stopped")"
+    echo "GLM Proxy: $([ -f /root/glm_proxy.pid ] && kill -0 "$(cat /root/glm_proxy.pid)" 2>/dev/null && echo "running" || echo "stopped")"
+    echo "CF Tunnel: $([ -f /root/cloudflared.pid ] && kill -0 "$(cat /root/cloudflared.pid)" 2>/dev/null && echo "running" || echo "stopped")"
     echo "Keepalive: $([ -f /var/run/keepalive.pid ] && kill -0 "$(cat /var/run/keepalive.pid)" 2>/dev/null && echo "running" || echo "stopped")"
     echo "Backup: $([ -f /var/run/chat-backup.pid ] && kill -0 "$(cat /var/run/chat-backup.pid)" 2>/dev/null && echo "running" || echo "stopped")"
     echo ""
@@ -183,8 +183,8 @@ case "${1:-run}" in
     status)
         echo "=== Auto-Restore Status ==="
         echo "Sessions: $(find "$LOCAL_DIR/sessions" -name "*.jsonl" 2>/dev/null | wc -l)"
-        echo "GLM Proxy: $([ -f /tmp/glm_proxy.pid ] && kill -0 "$(cat /tmp/glm_proxy.pid)" 2>/dev/null && echo "running" || echo "stopped")"
-        echo "CF Tunnel: $([ -f /tmp/cloudflared.pid ] && kill -0 "$(cat /tmp/cloudflared.pid)" 2>/dev/null && echo "running" || echo "stopped")"
+        echo "GLM Proxy: $([ -f /root/glm_proxy.pid ] && kill -0 "$(cat /root/glm_proxy.pid)" 2>/dev/null && echo "running" || echo "stopped")"
+        echo "CF Tunnel: $([ -f /root/cloudflared.pid ] && kill -0 "$(cat /root/cloudflared.pid)" 2>/dev/null && echo "running" || echo "stopped")"
         echo "Keepalive: $([ -f /var/run/keepalive.pid ] && kill -0 "$(cat /var/run/keepalive.pid)" 2>/dev/null && echo "running" || echo "stopped")"
         echo "Backup: $([ -f /var/run/chat-backup.pid ] && kill -0 "$(cat /var/run/chat-backup.pid)" 2>/dev/null && echo "running" || echo "stopped")"
         ;;
