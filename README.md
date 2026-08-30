@@ -48,7 +48,7 @@ git clone https://YOUR_USER:YOUR_TOKEN@ghfast.top/https://github.com/YOUR_USER/a
 # 第2行：复制脚本和配置到 /root/
 cp /root/recover/scripts/*.sh /root/ && chmod +x /root/*.sh
 cp -rf /root/recover/scripts/glm-proxy /root/glm-proxy 2>/dev/null
-cp -f /root/recover/root-data/*.txt /root/ 2>/dev/null
+cp -f /root/recover/tmp-data/*.txt /root/ 2>/dev/null
 
 # 第3行：写入 GitHub Token（⚠️ 必须做！否则 restore 会静默失败）
 echo "YOUR_TOKEN" > /root/github_token.txt
